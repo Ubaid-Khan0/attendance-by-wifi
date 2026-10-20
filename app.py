@@ -1,0 +1,498 @@
+import csv
+import io
+import ipaddress
+import os
+import secrets
+import sqlite3
+from datetime import date, datetime, time, timedelta
+from functools import wraps
+from zoneinfo import ZoneInfo
+
+import click
+from flask import (Flask, abort, flash, redirect, render_template, request,
+                   send_file, session, url_for)
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from database import create_tables, get_connection
+
+TZ = ZoneInfo("Asia/Karachi")
+app = Flask(__name__)
+app.config.update(
+    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32)),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=15),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production",
+)
+create_tables()
+
+
+def now_pk():
+    return datetime.now(TZ).replace(tzinfo=None)
+
+
+def today_pk():
+    return now_pk().date()
+
+
+def valid_password(value):
+    return len(value) >= 8 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+def csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return session["csrf_token"]
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def security_checks():
+    if request.method == "POST":
+        expected = session.get("csrf_token")
+        supplied = request.form.get("csrf_token")
+        if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+            abort(400, "Invalid or missing security token.")
+    allowed = {"logout", "change_password", "static"}
+    if session.get("user_id") and session.get("must_change_password") and request.endpoint not in allowed:
+        return redirect(url_for("change_password"))
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user_id"):
+            flash("Please log in first.", "error")
+            return redirect(url_for("employee_login"))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if session.get("role") != "admin":
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def current_schedule(connection, day=None):
+    day = day or today_pk().isoformat()
+    return connection.execute("""
+        SELECT * FROM work_schedules WHERE effective_from <= ?
+        ORDER BY effective_from DESC LIMIT 1
+    """, (day,)).fetchone()
+
+
+def is_holiday(connection, day):
+    return connection.execute("SELECT 1 FROM holidays WHERE holiday_date = ?", (day,)).fetchone() is not None
+
+
+def labels_for(day, check_in, check_out, schedule, valid=True):
+    if not valid:
+        return ["Invalid"]
+    target = date.fromisoformat(day)
+    if target.weekday() >= 5 or not schedule:
+        return ["Present"] if check_in else ["Not scheduled"]
+    if not check_in:
+        return ["Absent"] if now_pk() > datetime.combine(target, time.fromisoformat(schedule["end_time"])) else ["Not Yet Checked In"]
+    start_limit = datetime.combine(target, time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"])
+    result = ["Late" if datetime.fromisoformat(check_in) > start_limit else "On Time"]
+    if check_out and datetime.fromisoformat(check_out) < datetime.combine(target, time.fromisoformat(schedule["end_time"])):
+        result.append("Left Early")
+    return result
+
+
+def client_on_allowed_network(connection):
+    value = connection.execute("SELECT value FROM settings WHERE key='allowed_networks'").fetchone()["value"]
+    try:
+        address = ipaddress.ip_address(request.remote_addr)
+        return any(address in ipaddress.ip_network(item.strip(), strict=False) for item in value.split(",") if item.strip())
+    except ValueError:
+        return False
+
+
+def attempt_login(role):
+    code = request.form.get("employee_code", "").strip()
+    password = request.form.get("password", "")
+    connection = get_connection()
+    try:
+        user = connection.execute("SELECT * FROM employees WHERE employee_code=? AND role=?", (code, role)).fetchone()
+        current = now_pk()
+        if user and user["locked_until"] and datetime.fromisoformat(user["locked_until"]) > current:
+            flash("Account temporarily locked. Try again later.", "error")
+            return None
+        if user and user["is_active"] and user["password_hash"] and check_password_hash(user["password_hash"], password):
+            connection.execute("UPDATE employees SET failed_login_attempts=0, locked_until=NULL WHERE id=?", (user["id"],))
+            connection.commit()
+            session.clear()
+            session.permanent = True
+            session.update(user_id=user["id"], employee_code=user["employee_code"], employee_name=user["full_name"], role=user["role"], must_change_password=bool(user["must_change_password"]))
+            csrf_token()
+            return user
+        if user:
+            failures = user["failed_login_attempts"] + 1
+            locked = (current + timedelta(minutes=15)).isoformat(sep=" ", timespec="seconds") if failures >= 5 else None
+            connection.execute("UPDATE employees SET failed_login_attempts=?, locked_until=? WHERE id=?", (failures, locked, user["id"]))
+            connection.commit()
+        flash("Invalid credentials or inactive account.", "error")
+        return None
+    finally:
+        connection.close()
+
+
+@app.route("/")
+def home():
+    if session.get("role") == "admin":
+        return redirect(url_for("admin_dashboard"))
+    if session.get("user_id"):
+        return redirect(url_for("my_attendance"))
+    return redirect(url_for("employee_login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def employee_login():
+    if request.method == "POST" and attempt_login("employee"):
+        return redirect(url_for("my_attendance"))
+    return render_template("login.html", admin=False)
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST" and attempt_login("admin"):
+        return redirect(url_for("admin_dashboard"))
+    return render_template("login.html", admin=True)
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    flash("You have logged out.", "success")
+    return redirect(url_for("employee_login"))
+
+
+@app.route("/change-password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    if request.method == "POST":
+        current, new, confirm = (request.form.get(k, "") for k in ("current_password", "new_password", "confirm_password"))
+        connection = get_connection()
+        try:
+            user = connection.execute("SELECT password_hash FROM employees WHERE id=?", (session["user_id"],)).fetchone()
+            if not check_password_hash(user["password_hash"], current):
+                flash("Current password is incorrect.", "error")
+            elif new != confirm:
+                flash("New passwords do not match.", "error")
+            elif not valid_password(new):
+                flash("Use at least 8 characters with a letter and a number.", "error")
+            else:
+                connection.execute("UPDATE employees SET password_hash=?, must_change_password=0 WHERE id=?", (generate_password_hash(new), session["user_id"]))
+                connection.commit()
+                session["must_change_password"] = False
+                flash("Password changed.", "success")
+                return redirect(url_for("admin_dashboard" if session["role"] == "admin" else "my_attendance"))
+        finally:
+            connection.close()
+    return render_template("change_password.html")
+
+
+@app.route("/attendance")
+@login_required
+def my_attendance():
+    start = request.args.get("start", (today_pk() - timedelta(days=30)).isoformat())
+    end = request.args.get("end", today_pk().isoformat())
+    connection = get_connection()
+    try:
+        today_record = connection.execute("SELECT * FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today_pk().isoformat())).fetchone()
+        schedule = current_schedule(connection)
+        allowed = client_on_allowed_network(connection)
+        rows = build_report(connection, start, end, str(session["user_id"]))
+    finally:
+        connection.close()
+    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, network_allowed=allowed, start=start, end=end)
+
+
+@app.post("/attendance/check-in")
+@login_required
+def check_in():
+    connection = get_connection()
+    today = today_pk().isoformat()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        schedule = current_schedule(connection, today)
+        if not schedule:
+            flash("The administrator must configure a work schedule first.", "error")
+        elif is_holiday(connection, today) or today_pk().weekday() >= 5:
+            flash("Today is not a scheduled working day.", "error")
+        elif not client_on_allowed_network(connection):
+            flash("Check-in is only available on the configured office Wi-Fi.", "error")
+        elif connection.execute("SELECT 1 FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today)).fetchone():
+            flash("You already have a check-in for today.", "error")
+        else:
+            current = now_pk().isoformat(sep=" ", timespec="seconds")
+            connection.execute("INSERT INTO attendance(employee_id,check_in,attendance_date,schedule_id) VALUES(?,?,?,?)", (session["user_id"], current, today, schedule["id"]))
+            connection.commit()
+            flash("Check-in recorded.", "success")
+    except sqlite3.Error:
+        connection.rollback(); app.logger.exception("Check-in failed"); flash("Could not record check-in.", "error")
+    finally:
+        connection.close()
+    return redirect(url_for("my_attendance"))
+
+
+@app.post("/attendance/check-out")
+@login_required
+def check_out():
+    connection = get_connection()
+    try:
+        record = connection.execute("SELECT id FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1 AND check_out IS NULL", (session["user_id"], today_pk().isoformat())).fetchone()
+        if not record:
+            flash("No open check-in was found for today.", "error")
+        else:
+            connection.execute("UPDATE attendance SET check_out=? WHERE id=?", (now_pk().isoformat(sep=" ", timespec="seconds"), record["id"]))
+            connection.commit(); flash("Check-out recorded.", "success")
+    finally:
+        connection.close()
+    return redirect(url_for("my_attendance"))
+
+
+def build_report(connection, start, end, employee_id="", department="", label=""):
+    employees = connection.execute("SELECT * FROM employees WHERE (?='' OR id=?) AND (?='' OR department=?) ORDER BY full_name", (employee_id, employee_id, department, department)).fetchall()
+    records = connection.execute("SELECT * FROM attendance WHERE attendance_date BETWEEN ? AND ?", (start, end)).fetchall()
+    by_key = {(r["employee_id"], r["attendance_date"]): r for r in records}
+    holidays = {r[0] for r in connection.execute("SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN ? AND ?", (start, end))}
+    rows, day = [], date.fromisoformat(start)
+    while day <= date.fromisoformat(end):
+        day_text = day.isoformat()
+        if day.weekday() < 5 and day_text not in holidays:
+            schedule = current_schedule(connection, day_text)
+            for employee in employees:
+                created = str(employee["created_at"])[:10]
+                if day_text < created or (employee["deactivated_at"] and day_text > employee["deactivated_at"][:10]):
+                    continue
+                record = by_key.get((employee["id"], day_text))
+                labels = labels_for(day_text, record["check_in"] if record else None, record["check_out"] if record else None, schedule, record["is_valid"] if record else True)
+                row = {"record_id": record["id"] if record else None, "employee_code": employee["employee_code"], "full_name": employee["full_name"], "department": employee["department"] or "", "date": day_text, "check_in": record["check_in"] if record else None, "check_out": record["check_out"] if record else None, "labels": labels}
+                if not label or label in labels:
+                    rows.append(row)
+        day += timedelta(days=1)
+    return sorted(rows, key=lambda r: (r["date"], r["full_name"]), reverse=True)
+
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+    connection = get_connection()
+    try:
+        today = today_pk().isoformat()
+        rows = build_report(connection, today, today)
+        counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Not Yet Checked In", "Left Early")}
+        total = connection.execute("SELECT COUNT(*) FROM employees WHERE is_active=1").fetchone()[0]
+    finally:
+        connection.close()
+    return render_template("admin_dashboard.html", rows=rows, counts=counts, total=total)
+
+
+@app.route("/admin/employees")
+@admin_required
+def employees():
+    connection = get_connection()
+    try: people = connection.execute("SELECT * FROM employees ORDER BY id DESC").fetchall()
+    finally: connection.close()
+    return render_template("employees.html", employees=people)
+
+
+@app.post("/admin/employees/add")
+@admin_required
+def add_employee():
+    code, name, department, password = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password"))
+    if not code or not name or not valid_password(password):
+        flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
+    connection = get_connection()
+    try:
+        connection.execute("INSERT INTO employees(employee_code,full_name,department,password_hash,must_change_password) VALUES(?,?,?,?,1)", (code, name, department or None, generate_password_hash(password)))
+        connection.commit(); flash("Employee added.", "success")
+    except sqlite3.IntegrityError: flash("That employee code already exists.", "error")
+    finally: connection.close()
+    return redirect(url_for("employees"))
+
+
+def verify_admin_password(connection):
+    row = connection.execute("SELECT password_hash FROM employees WHERE id=?", (session["user_id"],)).fetchone()
+    return check_password_hash(row["password_hash"], request.form.get("admin_password", ""))
+
+
+@app.post("/admin/employees/<int:employee_id>/toggle")
+@admin_required
+def toggle_employee(employee_id):
+    connection = get_connection()
+    try:
+        if employee_id == session["user_id"]: flash("You cannot deactivate your own admin account.", "error")
+        elif not verify_admin_password(connection): flash("Admin password is incorrect.", "error")
+        else:
+            employee = connection.execute("SELECT is_active FROM employees WHERE id=?", (employee_id,)).fetchone()
+            if not employee: abort(404)
+            active = 0 if employee["is_active"] else 1
+            deactivated = now_pk().isoformat(sep=" ", timespec="seconds") if not active else None
+            connection.execute("UPDATE employees SET is_active=?, deactivated_at=? WHERE id=?", (active, deactivated, employee_id)); connection.commit(); flash("Employee status updated.", "success")
+    finally: connection.close()
+    return redirect(url_for("employees"))
+
+
+@app.post("/admin/employees/<int:employee_id>/reset-password")
+@admin_required
+def reset_password(employee_id):
+    password = request.form.get("password", "")
+    connection = get_connection()
+    try:
+        if not verify_admin_password(connection): flash("Admin password is incorrect.", "error")
+        elif not valid_password(password): flash("Temporary password must have 8 characters, a letter, and a number.", "error")
+        else:
+            connection.execute("UPDATE employees SET password_hash=?, must_change_password=1 WHERE id=?", (generate_password_hash(password), employee_id)); connection.commit(); flash("Temporary password set.", "success")
+    finally: connection.close()
+    return redirect(url_for("employees"))
+
+
+@app.route("/admin/settings", methods=["GET", "POST"])
+@admin_required
+def admin_settings():
+    connection = get_connection()
+    try:
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "schedule":
+                effective, start, end, grace = (request.form.get(k, "").strip() for k in ("effective_from", "start_time", "end_time", "grace_minutes"))
+                try:
+                    date.fromisoformat(effective); time.fromisoformat(start); time.fromisoformat(end); grace = int(grace)
+                    if end <= start or grace < 0: raise ValueError
+                    connection.execute("INSERT INTO work_schedules(effective_from,start_time,end_time,grace_minutes,created_by) VALUES(?,?,?,?,?) ON CONFLICT(effective_from) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,grace_minutes=excluded.grace_minutes,created_by=excluded.created_by", (effective, start, end, grace, session["user_id"]))
+                    flash("Schedule saved.", "success")
+                except ValueError: flash("Enter a valid schedule.", "error")
+            elif action == "holiday":
+                connection.execute("INSERT OR IGNORE INTO holidays(holiday_date,name,created_by) VALUES(?,?,?)", (request.form.get("holiday_date"), request.form.get("name", "").strip(), session["user_id"])); flash("Holiday saved.", "success")
+            elif action == "network":
+                networks = request.form.get("allowed_networks", "")
+                try:
+                    [ipaddress.ip_network(x.strip(), strict=False) for x in networks.split(",") if x.strip()]
+                    connection.execute("UPDATE settings SET value=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE key='allowed_networks'", (networks, session["user_id"])); flash("Allowed networks saved.", "success")
+                except ValueError: flash("Enter valid comma-separated IP networks.", "error")
+            connection.commit()
+        schedules = connection.execute("SELECT * FROM work_schedules ORDER BY effective_from DESC").fetchall()
+        holidays = connection.execute("SELECT * FROM holidays ORDER BY holiday_date DESC").fetchall()
+        networks = connection.execute("SELECT value FROM settings WHERE key='allowed_networks'").fetchone()["value"]
+    finally: connection.close()
+    return render_template("settings.html", schedules=schedules, holidays=holidays, networks=networks, client_ip=request.remote_addr)
+
+
+@app.post("/admin/holidays/<int:holiday_id>/delete")
+@admin_required
+def delete_holiday(holiday_id):
+    connection = get_connection(); connection.execute("DELETE FROM holidays WHERE id=?", (holiday_id,)); connection.commit(); connection.close()
+    flash("Holiday removed.", "success"); return redirect(url_for("admin_settings"))
+
+
+@app.route("/admin/reports")
+@admin_required
+def reports():
+    start, end = request.args.get("start", (today_pk()-timedelta(days=30)).isoformat()), request.args.get("end", today_pk().isoformat())
+    if end > today_pk().isoformat(): end = today_pk().isoformat()
+    if (date.fromisoformat(end)-date.fromisoformat(start)).days > 366: start=(date.fromisoformat(end)-timedelta(days=366)).isoformat()
+    connection=get_connection()
+    try:
+        rows=build_report(connection,start,end,request.args.get("employee_id",""),request.args.get("department",""),request.args.get("label",""))
+        people=connection.execute("SELECT id,full_name FROM employees ORDER BY full_name").fetchall(); departments=connection.execute("SELECT DISTINCT department FROM employees WHERE department IS NOT NULL ORDER BY department").fetchall()
+    finally: connection.close()
+    return render_template("reports.html",rows=rows,people=people,departments=departments,start=start,end=end)
+
+
+@app.get("/admin/reports/export")
+@admin_required
+def export_report():
+    try: from openpyxl import Workbook
+    except ImportError:
+        flash("Install project requirements to enable Excel export.", "error"); return redirect(url_for("reports", **request.args))
+    start,end=request.args.get("start",today_pk().isoformat()),request.args.get("end",today_pk().isoformat())
+    connection=get_connection()
+    try: rows=build_report(connection,start,end,request.args.get("employee_id",""),request.args.get("department",""),request.args.get("label",""))
+    finally: connection.close()
+    book=Workbook(); sheet=book.active; sheet.title="Attendance"; sheet.append(["Employee Code","Name","Department","Date","Check In","Check Out","Status"])
+    for row in rows: sheet.append([row["employee_code"],row["full_name"],row["department"],row["date"],row["check_in"],row["check_out"],", ".join(row["labels"])])
+    output=io.BytesIO(); book.save(output); output.seek(0)
+    return send_file(output,as_attachment=True,download_name=f"attendance-{start}-to-{end}.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/admin/attendance/<int:record_id>/edit", methods=["GET", "POST"])
+@admin_required
+def edit_attendance(record_id):
+    connection=get_connection()
+    try:
+        record=connection.execute("SELECT a.*,e.full_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE a.id=?",(record_id,)).fetchone()
+        if not record: abort(404)
+        if request.method=="POST":
+            reason=request.form.get("reason","").strip(); new_in=request.form.get("check_in") or None; new_out=request.form.get("check_out") or None; valid=0 if request.form.get("is_invalid") else 1
+            if not verify_admin_password(connection): flash("Admin password is incorrect.","error")
+            elif not reason: flash("A correction reason is required.","error")
+            elif new_in and new_out and new_out < new_in: flash("Check-out cannot be before check-in.","error")
+            else:
+                connection.execute("INSERT INTO attendance_audit(attendance_id,admin_id,action,reason,old_check_in,old_check_out,old_is_valid,new_check_in,new_check_out,new_is_valid) VALUES(?,?,?,?,?,?,?,?,?,?)",(record_id,session["user_id"],"invalidate" if not valid else "edit",reason,record["check_in"],record["check_out"],record["is_valid"],new_in,new_out,valid))
+                connection.execute("UPDATE attendance SET check_in=?,check_out=?,is_valid=? WHERE id=?",(new_in,new_out,valid,record_id)); connection.commit(); flash("Attendance corrected and audited.","success"); return redirect(url_for("reports"))
+    finally: connection.close()
+    return render_template("edit_attendance.html",record=record)
+
+
+@app.route("/admin/attendance/add", methods=["GET", "POST"])
+@admin_required
+def add_attendance():
+    connection = get_connection()
+    try:
+        people = connection.execute("SELECT id, employee_code, full_name FROM employees ORDER BY full_name").fetchall()
+        if request.method == "POST":
+            employee_id = request.form.get("employee_id", "")
+            check_in_value = request.form.get("check_in", "")
+            check_out_value = request.form.get("check_out") or None
+            reason = request.form.get("reason", "").strip()
+            try:
+                attendance_day = datetime.fromisoformat(check_in_value).date().isoformat()
+            except ValueError:
+                attendance_day = None
+            if not verify_admin_password(connection):
+                flash("Admin password is incorrect.", "error")
+            elif not attendance_day or not reason:
+                flash("Valid times and a correction reason are required.", "error")
+            elif check_out_value and check_out_value < check_in_value:
+                flash("Check-out cannot be before check-in.", "error")
+            elif connection.execute("SELECT 1 FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (employee_id, attendance_day)).fetchone():
+                flash("That employee already has a valid record for this date.", "error")
+            else:
+                schedule = current_schedule(connection, attendance_day)
+                cursor = connection.execute("INSERT INTO attendance(employee_id,check_in,check_out,attendance_date,schedule_id) VALUES(?,?,?,?,?)", (employee_id, check_in_value, check_out_value, attendance_day, schedule["id"] if schedule else None))
+                connection.execute("INSERT INTO attendance_audit(attendance_id,admin_id,action,reason,new_check_in,new_check_out,new_is_valid) VALUES(?,?,?,?,?,?,1)", (cursor.lastrowid, session["user_id"], "create", reason, check_in_value, check_out_value))
+                connection.commit()
+                flash("Missing attendance added and audited.", "success")
+                return redirect(url_for("reports"))
+    finally:
+        connection.close()
+    return render_template("add_attendance.html", people=people)
+
+
+@app.cli.command("create-admin")
+@click.option("--code", prompt="Admin ID")
+@click.option("--name", prompt="Full name")
+@click.password_option(confirmation_prompt=True)
+def create_admin(code, name, password):
+    """Create the first administrator account."""
+    if not valid_password(password): raise click.ClickException("Password needs 8 characters, a letter, and a number.")
+    connection=get_connection()
+    try:
+        if connection.execute("SELECT 1 FROM employees WHERE role='admin'").fetchone(): raise click.ClickException("An admin already exists.")
+        connection.execute("INSERT INTO employees(employee_code,full_name,password_hash,role) VALUES(?,?,?,'admin')",(code.strip(),name.strip(),generate_password_hash(password))); connection.commit()
+    finally: connection.close()
+    click.echo("Administrator created.")
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1")
