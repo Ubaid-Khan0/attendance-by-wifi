@@ -9,7 +9,7 @@
         <div class="form-field"><label>Employee ID</label><input name="employee_code" required></div>
         <div class="form-field"><label>Full name</label><input name="full_name" required></div>
         <div class="form-field"><label>Department</label><input name="department"></div>
-        <div class="form-field"><label>Role</label>{% if bootstrap_hr %}<input type="hidden" name="role" value="hr"><input value="HR" disabled>{% else %}<select name="role" required><option value="employee">Employee</option><option value="manager">Manager</option><option value="hr">HR</option></select>{% endif %}</div>
+        <div class="form-field"><label>Role</label>{% if bootstrap_hr %}<input type="hidden" name="role" value="hr"><input value="HR" disabled>{% else %}<select name="role" required><option value="employee">Employee</option><option value="intern">Intern</option><option value="manager">Manager</option><option value="hr">HR</option></select>{% endif %}</div>
         <div class="form-field"><label>Temporary password</label><input type="password" name="password" required></div>
         <button class="primary-button">Add Employee</button>
     </form>

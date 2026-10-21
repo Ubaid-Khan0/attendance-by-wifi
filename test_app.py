@@ -172,6 +172,19 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(updated["employee_code"], "MGR001")
         self.assertEqual((updated["full_name"], updated["department"], updated["role"]), ("Updated Manager", "Sales", "employee"))
 
+    def test_hr_can_assign_intern_role(self):
+        self.login_hr()
+        response = self.client.post("/hr/employees/add", data={
+            "csrf_token": self.csrf(), "employee_code": "INT001",
+            "full_name": "Test Intern", "department": "Technology",
+            "role": "intern", "password": "Intern123",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee added", response.data)
+        connection = get_connection()
+        role = connection.execute("SELECT role FROM employees WHERE employee_code='INT001'").fetchone()[0]
+        connection.close()
+        self.assertEqual(role, "intern")
+
     def test_admin_can_create_first_hr_only(self):
         connection = get_connection()
         connection.execute("UPDATE employees SET role='employee' WHERE id=3")

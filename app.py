@@ -479,7 +479,7 @@ def add_employee():
     bootstrap_hr = session.get("role") == "admin"
     if bootstrap_hr:
         role = "hr"
-    if role not in {"employee", "manager", "hr"}:
+    if role not in {"employee", "intern", "manager", "hr"}:
         flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
     if not code or not name or not valid_password(password):
         flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
@@ -514,7 +514,7 @@ def edit_employee(employee_id):
             active = 1 if request.form.get("is_active") else 0
             if not name:
                 flash("Full name is required.", "error")
-            elif role not in {"employee", "manager", "hr"}:
+            elif role not in {"employee", "intern", "manager", "hr"}:
                 flash("Select a valid employee role.", "error")
             elif employee_id == session["user_id"] and (role != "hr" or not active):
                 flash("You cannot remove your own HR access or deactivate your account.", "error")
