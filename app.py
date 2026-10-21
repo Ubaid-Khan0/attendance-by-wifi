@@ -95,6 +95,16 @@ def admin_required(view):
     return wrapped
 
 
+def hr_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if session.get("role") != "hr":
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def current_schedule(connection, day=None):
     day = day or today_pk().isoformat()
     return connection.execute("""
@@ -143,7 +153,10 @@ def attempt_login(role):
     password = request.form.get("password", "")
     connection = get_connection()
     try:
-        user = connection.execute("SELECT * FROM employees WHERE employee_code=? AND role=?", (code, role)).fetchone()
+        if role == "admin":
+            user = connection.execute("SELECT * FROM employees WHERE employee_code=? AND role='admin'", (code,)).fetchone()
+        else:
+            user = connection.execute("SELECT * FROM employees WHERE employee_code=? AND role!='admin'", (code,)).fetchone()
         current = now_pk()
         if user and user["locked_until"] and datetime.fromisoformat(user["locked_until"]) > current:
             flash("Account temporarily locked. Try again later.", "error")
@@ -420,24 +433,26 @@ def review_leave(leave_id):
     return redirect(url_for("admin_leaves"))
 
 
-@app.route("/admin/employees")
-@admin_required
+@app.route("/hr/employees")
+@hr_required
 def employees():
     connection = get_connection()
-    try: people = connection.execute("SELECT * FROM employees ORDER BY id DESC").fetchall()
+    try: people = connection.execute("SELECT * FROM employees WHERE role!='admin' ORDER BY id DESC").fetchall()
     finally: connection.close()
     return render_template("employees.html", employees=people)
 
 
-@app.post("/admin/employees/add")
-@admin_required
+@app.post("/hr/employees/add")
+@hr_required
 def add_employee():
-    code, name, department, password = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password"))
+    code, name, department, password, role = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password", "role"))
+    if role not in {"employee", "manager", "hr"}:
+        flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
     if not code or not name or not valid_password(password):
         flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
     connection = get_connection()
     try:
-        connection.execute("INSERT INTO employees(employee_code,full_name,department,password_hash,must_change_password) VALUES(?,?,?,?,1)", (code, name, department or None, generate_password_hash(password)))
+        connection.execute("INSERT INTO employees(employee_code,full_name,department,password_hash,must_change_password,role) VALUES(?,?,?,?,1,?)", (code, name, department or None, generate_password_hash(password), role))
         connection.commit(); flash("Employee added.", "success")
     except sqlite3.IntegrityError: flash("That employee code already exists.", "error")
     finally: connection.close()
@@ -449,15 +464,50 @@ def verify_admin_password(connection):
     return check_password_hash(row["password_hash"], request.form.get("admin_password", ""))
 
 
-@app.post("/admin/employees/<int:employee_id>/toggle")
-@admin_required
+@app.route("/hr/employees/<int:employee_id>/edit", methods=["GET", "POST"])
+@hr_required
+def edit_employee(employee_id):
+    connection = get_connection()
+    try:
+        employee = connection.execute("SELECT * FROM employees WHERE id=? AND role!='admin'", (employee_id,)).fetchone()
+        if not employee:
+            abort(404)
+        if request.method == "POST":
+            name = request.form.get("full_name", "").strip()
+            department = request.form.get("department", "").strip()
+            role = request.form.get("role", "").strip()
+            active = 1 if request.form.get("is_active") else 0
+            if not name:
+                flash("Full name is required.", "error")
+            elif role not in {"employee", "manager", "hr"}:
+                flash("Select a valid employee role.", "error")
+            elif employee_id == session["user_id"] and (role != "hr" or not active):
+                flash("You cannot remove your own HR access or deactivate your account.", "error")
+            else:
+                deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
+                connection.execute("""
+                    UPDATE employees SET full_name=?, department=?, role=?, is_active=?, deactivated_at=?
+                    WHERE id=?
+                """, (name, department or None, role, active, deactivated, employee_id))
+                connection.commit()
+                if employee_id == session["user_id"]:
+                    session["employee_name"] = name
+                flash("Employee details updated.", "success")
+                return redirect(url_for("employees"))
+    finally:
+        connection.close()
+    return render_template("edit_employee.html", employee=employee)
+
+
+@app.post("/hr/employees/<int:employee_id>/toggle")
+@hr_required
 def toggle_employee(employee_id):
     connection = get_connection()
     try:
-        if employee_id == session["user_id"]: flash("You cannot deactivate your own admin account.", "error")
-        elif not verify_admin_password(connection): flash("Admin password is incorrect.", "error")
+        if employee_id == session["user_id"]: flash("You cannot deactivate your own HR account.", "error")
+        elif not verify_admin_password(connection): flash("Your password is incorrect.", "error")
         else:
-            employee = connection.execute("SELECT is_active FROM employees WHERE id=?", (employee_id,)).fetchone()
+            employee = connection.execute("SELECT is_active FROM employees WHERE id=? AND role!='admin'", (employee_id,)).fetchone()
             if not employee: abort(404)
             active = 0 if employee["is_active"] else 1
             deactivated = now_pk().isoformat(sep=" ", timespec="seconds") if not active else None
@@ -466,13 +516,15 @@ def toggle_employee(employee_id):
     return redirect(url_for("employees"))
 
 
-@app.post("/admin/employees/<int:employee_id>/reset-password")
-@admin_required
+@app.post("/hr/employees/<int:employee_id>/reset-password")
+@hr_required
 def reset_password(employee_id):
     password = request.form.get("password", "")
     connection = get_connection()
     try:
-        if not verify_admin_password(connection): flash("Admin password is incorrect.", "error")
+        employee = connection.execute("SELECT 1 FROM employees WHERE id=? AND role!='admin'", (employee_id,)).fetchone()
+        if not employee: abort(404)
+        if not verify_admin_password(connection): flash("Your password is incorrect.", "error")
         elif not valid_password(password): flash("Temporary password must have 8 characters, a letter, and a number.", "error")
         else:
             connection.execute("UPDATE employees SET password_hash=?, must_change_password=1 WHERE id=?", (generate_password_hash(password), employee_id)); connection.commit(); flash("Temporary password set.", "success")
@@ -615,6 +667,24 @@ def create_admin(code, name, password):
         connection.execute("INSERT INTO employees(employee_code,full_name,password_hash,role) VALUES(?,?,?,'admin')",(code.strip(),name.strip(),generate_password_hash(password))); connection.commit()
     finally: connection.close()
     click.echo("Administrator created.")
+
+
+@app.cli.command("assign-hr")
+@click.option("--code", required=True, help="Employee ID to promote to HR.")
+def assign_hr(code):
+    """Assign the HR role to an existing employee."""
+    connection = get_connection()
+    try:
+        employee = connection.execute("SELECT id, role FROM employees WHERE employee_code=?", (code.strip(),)).fetchone()
+        if not employee:
+            raise click.ClickException("Employee ID was not found.")
+        if employee["role"] == "admin":
+            raise click.ClickException("An admin account cannot be changed to HR.")
+        connection.execute("UPDATE employees SET role='hr' WHERE id=?", (employee["id"],))
+        connection.commit()
+    finally:
+        connection.close()
+    click.echo(f"{code.strip()} now has the HR role.")
 
 
 if __name__ == "__main__":

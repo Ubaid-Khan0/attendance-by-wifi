@@ -519,6 +519,26 @@ td {
     grid-column: 1 / -1;
 }
 
+.checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.form-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    grid-column: 1 / -1;
+}
+
+.form-actions .primary-button {
+    grid-column: auto;
+}
+
 .form-field {
     display: flex;
     min-width: 0;

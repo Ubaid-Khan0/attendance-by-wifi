@@ -34,6 +34,10 @@ class AttendanceAppTests(unittest.TestCase):
             VALUES (2, 'EMP001', 'Test Employee', 'QA', ?)
         """, (generate_password_hash("Employee123"),))
         connection.execute("""
+            INSERT INTO employees(id, employee_code, full_name, department, password_hash, role)
+            VALUES (3, 'HR001', 'HR User', 'Human Resources', ?, 'hr')
+        """, (generate_password_hash("Human123"),))
+        connection.execute("""
             INSERT INTO work_schedules(effective_from, start_time, end_time, grace_minutes, created_by)
             VALUES (?, '00:00', '23:59', 0, 1)
         """, ((today_pk() - timedelta(days=30)).isoformat(),))
@@ -53,14 +57,26 @@ class AttendanceAppTests(unittest.TestCase):
             follow_redirects=True,
         )
 
+    def login_hr(self):
+        return self.client.post(
+            "/login",
+            data={"csrf_token": self.csrf(), "employee_code": "HR001", "password": "Human123"},
+            follow_redirects=True,
+        )
+
     def test_pages_render_and_roles_are_separate(self):
         self.assertEqual(self.client.get("/login").status_code, 200)
         self.assertEqual(self.login().status_code, 200)
         self.assertEqual(self.client.get("/admin").status_code, 403)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
         self.assertEqual(self.login(admin=True).status_code, 200)
-        for path in ("/admin", "/admin/employees", "/admin/settings", "/admin/reports", "/attendance"):
+        for path in ("/admin", "/admin/settings", "/admin/reports", "/attendance"):
             self.assertEqual(self.client.get(path).status_code, 200, path)
+        self.assertEqual(self.client.get("/hr/employees").status_code, 403)
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.assertEqual(self.login_hr().status_code, 200)
+        self.assertEqual(self.client.get("/hr/employees").status_code, 200)
+        self.assertEqual(self.client.get("/admin").status_code, 403)
 
     def test_csrf_is_required(self):
         self.assertEqual(self.client.post("/login", data={}).status_code, 400)
@@ -129,6 +145,32 @@ class AttendanceAppTests(unittest.TestCase):
         status = connection.execute("SELECT status FROM leave_requests WHERE id=?", (leave_id,)).fetchone()[0]
         connection.close()
         self.assertEqual(status, "approved")
+
+    def test_hr_assigns_role_and_edits_employee_without_changing_id(self):
+        self.login_hr()
+        response = self.client.post("/hr/employees/add", data={
+            "csrf_token": self.csrf(), "employee_code": "MGR001",
+            "full_name": "Team Manager", "department": "Operations",
+            "role": "manager", "password": "Manager123",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee added", response.data)
+
+        connection = get_connection()
+        manager = connection.execute("SELECT id, employee_code, role FROM employees WHERE employee_code='MGR001'").fetchone()
+        connection.close()
+        self.assertEqual(manager["role"], "manager")
+
+        response = self.client.post(f"/hr/employees/{manager['id']}/edit", data={
+            "csrf_token": self.csrf(), "employee_code": "CHANGED",
+            "full_name": "Updated Manager", "department": "Sales",
+            "role": "employee", "is_active": "on",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee details updated", response.data)
+        connection = get_connection()
+        updated = connection.execute("SELECT employee_code, full_name, department, role FROM employees WHERE id=?", (manager["id"],)).fetchone()
+        connection.close()
+        self.assertEqual(updated["employee_code"], "MGR001")
+        self.assertEqual((updated["full_name"], updated["department"], updated["role"]), ("Updated Manager", "Sales", "employee"))
 
 
 if __name__ == "__main__":
