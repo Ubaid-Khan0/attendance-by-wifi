@@ -144,6 +144,52 @@ For use from other devices on the office network, configure the Flask
 server binding, firewall, and router/network settings appropriately. Do
 not expose the development server directly to the public internet.
 
+## Production Deployment
+
+The included `Procfile` starts the application with Gunicorn on a Linux
+hosting service. Configure these environment variables on the host:
+
+``` text
+FLASK_SECRET_KEY=<a long, stable, random value>
+FLASK_ENV=production
+TRUSTED_PROXY_HOPS=1
+ATTENDANCE_DATABASE=<a path on persistent storage>/attendance.db
+```
+
+`TRUSTED_PROXY_HOPS=1` is appropriate only when the application is directly
+behind one trusted hosting proxy. Change it to match the documented proxy
+chain of the selected host; never enable it when clients can connect directly
+to Gunicorn.
+
+After deployment, set `allowed_networks` in Admin Settings to the office
+public IPv4 address with a `/32` suffix. Keep `192.168.111.0/24` only for the
+local-network version. SQLite must be stored on a persistent disk, otherwise
+accounts and attendance records will be lost when the host restarts.
+
+### PythonAnywhere
+
+PythonAnywhere provides the verified visitor address in `X-Real-IP`. In the
+PythonAnywhere WSGI configuration, set these values before importing `app`:
+
+``` python
+import os
+import sys
+
+project_path = "/home/YOUR_USERNAME/attendance-by-wifi"
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+
+os.environ["FLASK_SECRET_KEY"] = "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+os.environ["FLASK_ENV"] = "production"
+os.environ["TRUSTED_IP_HEADER"] = "X-Real-IP"
+os.environ["ATTENDANCE_DATABASE"] = f"{project_path}/attendance.db"
+
+from app import app as application
+```
+
+Do not set `TRUSTED_PROXY_HOPS` on PythonAnywhere. After reloading the web app,
+open Admin Settings and set the office public IPv4 address with a `/32` suffix.
+
 ## Run Tests
 
 Run the automated tests with:

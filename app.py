@@ -12,11 +12,26 @@ import click
 from flask import (Flask, abort, flash, redirect, render_template, request,
                    send_file, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from database import create_tables, get_connection
 
 TZ = ZoneInfo("Asia/Karachi")
 app = Flask(__name__)
+try:
+    trusted_proxy_hops = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
+    if trusted_proxy_hops < 0:
+        raise ValueError
+except ValueError as error:
+    raise RuntimeError("TRUSTED_PROXY_HOPS must be a non-negative integer.") from error
+
+if trusted_proxy_hops:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=trusted_proxy_hops,
+        x_proto=trusted_proxy_hops,
+    )
+
 app.config.update(
     SECRET_KEY=os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32)),
     PERMANENT_SESSION_LIFETIME=timedelta(days=15),
@@ -110,10 +125,17 @@ def labels_for(day, check_in, check_out, schedule, valid=True):
 def client_on_allowed_network(connection):
     value = connection.execute("SELECT value FROM settings WHERE key='allowed_networks'").fetchone()["value"]
     try:
-        address = ipaddress.ip_address(request.remote_addr)
+        header_name = os.environ.get("TRUSTED_IP_HEADER", "").strip()
+        client_ip = request.headers.get(header_name, "") if header_name else request.remote_addr
+        address = ipaddress.ip_address(client_ip)
         return any(address in ipaddress.ip_network(item.strip(), strict=False) for item in value.split(",") if item.strip())
-    except ValueError:
+    except (TypeError, ValueError):
         return False
+
+
+def client_ip_address():
+    header_name = os.environ.get("TRUSTED_IP_HEADER", "").strip()
+    return request.headers.get(header_name, "Unknown") if header_name else request.remote_addr
 
 
 def attempt_login(role):
@@ -385,7 +407,7 @@ def admin_settings():
         holidays = connection.execute("SELECT * FROM holidays ORDER BY holiday_date DESC").fetchall()
         networks = connection.execute("SELECT value FROM settings WHERE key='allowed_networks'").fetchone()["value"]
     finally: connection.close()
-    return render_template("settings.html", schedules=schedules, holidays=holidays, networks=networks, client_ip=request.remote_addr)
+    return render_template("settings.html", schedules=schedules, holidays=holidays, networks=networks, client_ip=client_ip_address())
 
 
 @app.post("/admin/holidays/<int:holiday_id>/delete")
@@ -495,4 +517,8 @@ def create_admin(code, name, password):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1")
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG") == "1",
+    )

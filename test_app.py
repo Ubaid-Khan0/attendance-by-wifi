@@ -7,6 +7,7 @@ _database_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _database_file.close()
 os.environ["ATTENDANCE_DATABASE"] = _database_file.name
 os.environ["FLASK_SECRET_KEY"] = "test-secret"
+os.environ["TRUSTED_IP_HEADER"] = "X-Real-IP"
 
 from werkzeug.security import generate_password_hash
 
@@ -36,6 +37,7 @@ class AttendanceAppTests(unittest.TestCase):
             INSERT INTO work_schedules(effective_from, start_time, end_time, grace_minutes, created_by)
             VALUES (?, '00:00', '23:59', 0, 1)
         """, ((today_pk() - timedelta(days=30)).isoformat(),))
+        connection.execute("UPDATE settings SET value='127.0.0.0/8,::1/128' WHERE key='allowed_networks'")
         connection.commit()
         connection.close()
 
@@ -66,12 +68,36 @@ class AttendanceAppTests(unittest.TestCase):
     def test_check_in_is_unique_and_check_out_works(self):
         self.login()
         token = self.csrf()
-        first = self.client.post("/attendance/check-in", data={"csrf_token": token}, follow_redirects=True)
+        first = self.client.post("/attendance/check-in", data={"csrf_token": token}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"Check-in recorded", first.data)
-        second = self.client.post("/attendance/check-in", data={"csrf_token": token}, follow_redirects=True)
+        second = self.client.post("/attendance/check-in", data={"csrf_token": token}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"already have a check-in", second.data)
         checkout = self.client.post("/attendance/check-out", data={"csrf_token": token}, follow_redirects=True)
         self.assertIn(b"Check-out recorded", checkout.data)
+
+    def test_deployed_check_in_uses_forwarded_public_ip(self):
+        connection = get_connection()
+        connection.execute("UPDATE settings SET value='198.51.100.10/32' WHERE key='allowed_networks'")
+        connection.commit()
+        connection.close()
+
+        self.login()
+        token = self.csrf()
+        rejected = self.client.post(
+            "/attendance/check-in",
+            data={"csrf_token": token},
+            headers={"X-Real-IP": "203.0.113.20"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"only available on the configured office Wi-Fi", rejected.data)
+
+        accepted = self.client.post(
+            "/attendance/check-in",
+            data={"csrf_token": token},
+            headers={"X-Real-IP": "198.51.100.10"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Check-in recorded", accepted.data)
 
     def test_excel_export(self):
         self.login(admin=True)
