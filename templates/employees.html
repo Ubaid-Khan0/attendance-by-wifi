@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Employees{% endblock %}
 {% block content %}
-<header class="topbar"><div><h1>Employees</h1><p class="subtitle">Add employees, assign roles, and maintain staff details.</p></div></header>
+<header class="topbar"><div><h1>{{ 'Create First HR' if bootstrap_hr else 'Employees' }}</h1><p class="subtitle">{{ 'Create the first HR account. Employee management becomes HR-only afterward.' if bootstrap_hr else 'Add employees, assign roles, and maintain staff details.' }}</p></div></header>
 <section class="content-card">
     <div class="section-header"><h2>Add Employee</h2></div>
     <form method="post" action="{{ url_for('add_employee') }}" class="employee-form">
@@ -9,13 +9,13 @@
         <div class="form-field"><label>Employee ID</label><input name="employee_code" required></div>
         <div class="form-field"><label>Full name</label><input name="full_name" required></div>
         <div class="form-field"><label>Department</label><input name="department"></div>
-        <div class="form-field"><label>Role</label><select name="role" required><option value="employee">Employee</option><option value="manager">Manager</option><option value="hr">HR</option></select></div>
+        <div class="form-field"><label>Role</label>{% if bootstrap_hr %}<input type="hidden" name="role" value="hr"><input value="HR" disabled>{% else %}<select name="role" required><option value="employee">Employee</option><option value="manager">Manager</option><option value="hr">HR</option></select>{% endif %}</div>
         <div class="form-field"><label>Temporary password</label><input type="password" name="password" required></div>
         <button class="primary-button">Add Employee</button>
     </form>
 </section>
-<section class="content-card"><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Department</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+{% if not bootstrap_hr %}<section class="content-card"><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Department</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>
 {% for e in employees %}<tr><td>{{ e.full_name }}<small>{{ e.employee_code }}</small></td><td>{{ e.department or '—' }}</td><td>{{ e.role|title }}</td><td>{{ 'Active' if e.is_active else 'Inactive' }}</td><td><a class="secondary-button" href="{{ url_for('edit_employee', employee_id=e.id) }}">Edit</a><details><summary>More</summary><form method="post" action="{{ url_for('reset_password',employee_id=e.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="password" name="password" placeholder="New temporary password" required><input type="password" name="admin_password" placeholder="Your HR password" required><button class="secondary-button">Reset Password</button></form>{% if e.id != session.user_id %}<form method="post" action="{{ url_for('toggle_employee',employee_id=e.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="password" name="admin_password" placeholder="Your HR password" required><button class="secondary-button">{{ 'Deactivate' if e.is_active else 'Reactivate' }}</button></form>{% endif %}</details></td></tr>
 {% else %}<tr><td colspan="5">No employees found.</td></tr>{% endfor %}
-</tbody></table></div></section>
+</tbody></table></div></section>{% endif %}
 {% endblock %}

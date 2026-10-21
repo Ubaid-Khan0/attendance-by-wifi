@@ -105,6 +105,36 @@ def hr_required(view):
     return wrapped
 
 
+def employee_management_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if session.get("role") == "hr":
+            return view(*args, **kwargs)
+        if session.get("role") == "admin":
+            connection = get_connection()
+            try:
+                hr_exists = connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone()
+            finally:
+                connection.close()
+            if not hr_exists:
+                return view(*args, **kwargs)
+        abort(403)
+    return wrapped
+
+
+@app.context_processor
+def employee_management_navigation():
+    if session.get("role") != "admin":
+        return {"needs_first_hr": False}
+    connection = get_connection()
+    try:
+        needs_first_hr = connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone() is None
+    finally:
+        connection.close()
+    return {"needs_first_hr": needs_first_hr}
+
+
 def current_schedule(connection, day=None):
     day = day or today_pk().isoformat()
     return connection.execute("""
@@ -434,18 +464,21 @@ def review_leave(leave_id):
 
 
 @app.route("/hr/employees")
-@hr_required
+@employee_management_required
 def employees():
     connection = get_connection()
     try: people = connection.execute("SELECT * FROM employees WHERE role!='admin' ORDER BY id DESC").fetchall()
     finally: connection.close()
-    return render_template("employees.html", employees=people)
+    return render_template("employees.html", employees=people, bootstrap_hr=session.get("role") == "admin")
 
 
 @app.post("/hr/employees/add")
-@hr_required
+@employee_management_required
 def add_employee():
     code, name, department, password, role = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password", "role"))
+    bootstrap_hr = session.get("role") == "admin"
+    if bootstrap_hr:
+        role = "hr"
     if role not in {"employee", "manager", "hr"}:
         flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
     if not code or not name or not valid_password(password):
@@ -454,6 +487,8 @@ def add_employee():
     try:
         connection.execute("INSERT INTO employees(employee_code,full_name,department,password_hash,must_change_password,role) VALUES(?,?,?,?,1,?)", (code, name, department or None, generate_password_hash(password), role))
         connection.commit(); flash("Employee added.", "success")
+        if bootstrap_hr:
+            return redirect(url_for("admin_dashboard"))
     except sqlite3.IntegrityError: flash("That employee code already exists.", "error")
     finally: connection.close()
     return redirect(url_for("employees"))
