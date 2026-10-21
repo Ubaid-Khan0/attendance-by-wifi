@@ -2,8 +2,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 :root {
-    --navy: #14213d;
-    --blue: #356df3;
+    --navy: #0b2a5b;
+    --blue: #164a9c;
+    --red: #e31e24;
     --background: #f5f7fb;
     --text: #202b3c;
     --muted: #7b8799;
@@ -64,7 +65,7 @@ select {
     height: 42px;
     flex-shrink: 0;
     border-radius: 12px;
-    background: var(--blue);
+    background: var(--red);
     font-size: 24px;
     font-weight: 800;
 }
@@ -110,12 +111,12 @@ select {
 }
 
 .nav-item:hover {
-    background: #243858;
+    background: #164a9c;
     color: white;
 }
 
 .nav-item.active {
-    background: var(--blue);
+    background: var(--red);
     color: white;
 }
 
@@ -223,7 +224,7 @@ select {
     margin-bottom: 23px;
     padding: 25px 29px;
     border-radius: 15px;
-    background: linear-gradient(115deg, #244bb0, #3978f5);
+    background: linear-gradient(115deg, var(--navy) 0%, var(--blue) 72%, var(--red) 100%);
     color: white;
 }
 
@@ -577,12 +578,12 @@ details summary {
 
 .primary-button {
     grid-column: 1 / -1;
-    background: var(--blue);
+    background: var(--red);
     color: white;
 }
 
 .primary-button:hover {
-    background: #2858d4;
+    background: #bd151b;
 }
 
 .secondary-button {
