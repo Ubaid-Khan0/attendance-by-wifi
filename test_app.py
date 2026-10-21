@@ -1,11 +1,15 @@
+import io
 import os
+import shutil
 import tempfile
 import unittest
 from datetime import timedelta
 
 _database_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _database_file.close()
+_upload_folder = tempfile.mkdtemp()
 os.environ["ATTENDANCE_DATABASE"] = _database_file.name
+os.environ["LEAVE_UPLOAD_FOLDER"] = _upload_folder
 os.environ["FLASK_SECRET_KEY"] = "test-secret"
 os.environ["TRUSTED_IP_HEADER"] = "X-Real-IP"
 
@@ -19,6 +23,7 @@ class AttendanceAppTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         os.unlink(_database_file.name)
+        shutil.rmtree(_upload_folder)
 
     def setUp(self):
         self.client = app.test_client()
@@ -145,6 +150,30 @@ class AttendanceAppTests(unittest.TestCase):
         status = connection.execute("SELECT status FROM leave_requests WHERE id=?", (leave_id,)).fetchone()[0]
         connection.close()
         self.assertEqual(status, "approved")
+
+    def test_sick_and_emergency_leave_require_picture(self):
+        self.login()
+        start = (today_pk() + timedelta(days=2)).isoformat()
+        response = self.client.post("/leave", data={
+            "csrf_token": self.csrf(), "leave_type": "Sick",
+            "start_date": start, "end_date": start, "reason": "Medical rest",
+        }, follow_redirects=True)
+        self.assertIn(b"require a JPG, PNG, or WebP image", response.data)
+
+        response = self.client.post("/leave", data={
+            "csrf_token": self.csrf(), "leave_type": "Emergency",
+            "start_date": start, "end_date": start, "reason": "Urgent family matter",
+            "evidence": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"test-image"), "evidence.png"),
+        }, content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn(b"Leave request submitted", response.data)
+
+        connection = get_connection()
+        item = connection.execute("SELECT id, attachment_name FROM leave_requests WHERE leave_type='Emergency'").fetchone()
+        connection.close()
+        self.assertTrue(item["attachment_name"].endswith(".png"))
+        evidence_response = self.client.get(f"/leave/{item['id']}/evidence")
+        self.assertEqual(evidence_response.status_code, 200)
+        evidence_response.close()
 
     def test_hr_assigns_role_and_edits_employee_without_changing_id(self):
         self.login_hr()

@@ -4,20 +4,28 @@
 <header class="topbar"><div><h1>My Leave</h1><p class="subtitle">Request leave and track approval status.</p></div></header>
 <section class="content-card">
     <div class="section-header"><h2>New Leave Request</h2></div>
-    <form method="post" class="leave-form">
+    <form method="post" class="leave-form" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="form-field"><label>Leave type</label><select name="leave_type" required><option value="">Select type</option><option>Annual</option><option>Sick</option><option>Casual</option><option>Unpaid</option></select></div>
+        <div class="form-field"><label>Leave type</label><select name="leave_type" id="leave-type" required><option value="">Select type</option><option>Annual</option><option>Sick</option><option>Emergency</option><option>Casual</option><option>Unpaid</option></select></div>
         <div class="form-field"><label>Start date</label><input type="date" name="start_date" min="{{ today }}" required></div>
         <div class="form-field"><label>End date</label><input type="date" name="end_date" min="{{ today }}" required></div>
         <div class="form-field leave-reason"><label>Reason</label><textarea name="reason" rows="3" maxlength="500" required></textarea></div>
+        <div class="form-field leave-reason"><label>Supporting picture <span id="evidence-note">(required for Sick and Emergency)</span></label><input type="file" id="leave-evidence" name="evidence" accept="image/jpeg,image/png,image/webp"><small>JPG, PNG, or WebP · maximum 5 MB</small></div>
         <button class="primary-button">Submit Request</button>
     </form>
 </section>
 <section class="content-card">
     <div class="section-header"><h2>Request History</h2></div>
     <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th>Admin Note</th></tr></thead><tbody>
-    {% for item in requests %}<tr><td>{{ item.leave_type }}</td><td>{{ item.start_date }} to {{ item.end_date }}</td><td class="wrap-cell">{{ item.reason }}</td><td><span class="status-badge {{ item.status }}">{{ item.status|title }}</span></td><td class="wrap-cell">{{ item.reviewer_note or '—' }}</td></tr>
+    {% for item in requests %}<tr><td>{{ item.leave_type }}{% if item.attachment_name %}<small><a class="card-link" href="{{ url_for('leave_evidence', leave_id=item.id) }}">View picture</a></small>{% endif %}</td><td>{{ item.start_date }} to {{ item.end_date }}</td><td class="wrap-cell">{{ item.reason }}</td><td><span class="status-badge {{ item.status }}">{{ item.status|title }}</span></td><td class="wrap-cell">{{ item.reviewer_note or '—' }}</td></tr>
     {% else %}<tr><td colspan="5">No leave requests yet.</td></tr>{% endfor %}
     </tbody></table></div>
 </section>
+<script>
+const leaveType = document.getElementById('leave-type');
+const evidence = document.getElementById('leave-evidence');
+function updateEvidenceRequirement() { evidence.required = ['Sick', 'Emergency'].includes(leaveType.value); }
+leaveType.addEventListener('change', updateEvidenceRequirement);
+updateEvidenceRequirement();
+</script>
 {% endblock %}

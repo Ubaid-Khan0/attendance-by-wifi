@@ -119,6 +119,7 @@ def create_tables():
                 FOREIGN KEY (reviewed_by) REFERENCES employees(id)
             )
         """)
+        _add_column(connection, "leave_requests", "attachment_name TEXT")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_employee_dates ON leave_requests(employee_id, start_date, end_date)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status)")
         connection.commit()

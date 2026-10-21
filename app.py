@@ -6,17 +6,20 @@ import secrets
 import sqlite3
 from datetime import date, datetime, time, timedelta
 from functools import wraps
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import click
 from flask import (Flask, abort, flash, redirect, render_template, request,
-                   send_file, session, url_for)
+                   send_file, send_from_directory, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from database import create_tables, get_connection
 
 TZ = ZoneInfo("Asia/Karachi")
+LEAVE_UPLOAD_FOLDER = Path(os.environ.get("LEAVE_UPLOAD_FOLDER", Path(__file__).resolve().parent / "leave_uploads"))
+MAX_LEAVE_IMAGE_BYTES = 5 * 1024 * 1024
 app = Flask(__name__)
 try:
     trusted_proxy_hops = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
@@ -52,6 +55,25 @@ def today_pk():
 
 def valid_password(value):
     return len(value) >= 8 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+def leave_image_extension(upload):
+    if not upload or not upload.filename:
+        return None
+    upload.stream.seek(0, 2)
+    size = upload.stream.tell()
+    upload.stream.seek(0)
+    header = upload.stream.read(12)
+    upload.stream.seek(0)
+    if size <= 0 or size > MAX_LEAVE_IMAGE_BYTES:
+        return None
+    if header.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 
 def csrf_token():
@@ -378,6 +400,8 @@ def leave_requests():
             start_text = request.form.get("start_date", "").strip()
             end_text = request.form.get("end_date", "").strip()
             reason = request.form.get("reason", "").strip()
+            evidence = request.files.get("evidence")
+            evidence_extension = leave_image_extension(evidence)
             try:
                 start_date = date.fromisoformat(start_text)
                 end_date = date.fromisoformat(end_text)
@@ -390,19 +414,28 @@ def leave_requests():
                     WHERE employee_id=? AND status IN ('pending', 'approved')
                       AND start_date <= ? AND end_date >= ?
                 """, (session["user_id"], end_text, start_text)).fetchone()
-            if leave_type not in {"Annual", "Sick", "Casual", "Unpaid"}:
+            if leave_type not in {"Annual", "Sick", "Emergency", "Casual", "Unpaid"}:
                 flash("Select a valid leave type.", "error")
             elif not start_date or not end_date or end_date < start_date:
                 flash("Enter a valid leave date range.", "error")
             elif not reason:
                 flash("Please provide a reason for your leave.", "error")
+            elif leave_type in {"Sick", "Emergency"} and not evidence_extension:
+                flash("Sick and emergency leave require a JPG, PNG, or WebP image up to 5 MB.", "error")
+            elif evidence and evidence.filename and not evidence_extension:
+                flash("Upload a valid JPG, PNG, or WebP image up to 5 MB.", "error")
             elif overlap:
                 flash("You already have a pending or approved request for these dates.", "error")
             else:
-                connection.execute("""
+                cursor = connection.execute("""
                     INSERT INTO leave_requests(employee_id, leave_type, start_date, end_date, reason)
                     VALUES (?, ?, ?, ?, ?)
                 """, (session["user_id"], leave_type, start_text, end_text, reason))
+                if evidence_extension:
+                    LEAVE_UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+                    attachment_name = f"leave-{cursor.lastrowid}-{secrets.token_hex(8)}.{evidence_extension}"
+                    evidence.save(LEAVE_UPLOAD_FOLDER / attachment_name)
+                    connection.execute("UPDATE leave_requests SET attachment_name=? WHERE id=?", (attachment_name, cursor.lastrowid))
                 connection.commit()
                 flash("Leave request submitted.", "success")
                 return redirect(url_for("leave_requests"))
@@ -412,6 +445,21 @@ def leave_requests():
     finally:
         connection.close()
     return render_template("leave.html", requests=requests, today=today_pk().isoformat())
+
+
+@app.get("/leave/<int:leave_id>/evidence")
+@login_required
+def leave_evidence(leave_id):
+    connection = get_connection()
+    try:
+        item = connection.execute("SELECT employee_id, attachment_name FROM leave_requests WHERE id=?", (leave_id,)).fetchone()
+    finally:
+        connection.close()
+    if not item or not item["attachment_name"]:
+        abort(404)
+    if session.get("role") != "admin" and item["employee_id"] != session["user_id"]:
+        abort(403)
+    return send_from_directory(LEAVE_UPLOAD_FOLDER, item["attachment_name"], as_attachment=True)
 
 
 @app.get("/admin/leaves")
