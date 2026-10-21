@@ -446,6 +446,21 @@ td {
     color: #315fc4;
 }
 
+.status-badge.pending {
+    background: #fff4d6;
+    color: #946200;
+}
+
+.status-badge.approved {
+    background: #e3f8ee;
+    color: #128358;
+}
+
+.status-badge.rejected {
+    background: #fff0ee;
+    color: #b42318;
+}
+
 .empty-state {
     padding: 36px 15px;
     text-align: center;
@@ -491,6 +506,19 @@ td {
     padding: 0 24px 24px;
 }
 
+.leave-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: end;
+    gap: 18px;
+    padding: 0 24px 24px;
+}
+
+.leave-reason,
+.leave-form .primary-button {
+    grid-column: 1 / -1;
+}
+
 .form-field {
     display: flex;
     min-width: 0;
@@ -522,6 +550,54 @@ td {
     border: 1px solid #dfe6f0;
     border-radius: 8px;
     background: white;
+}
+
+.form-field textarea,
+.review-form input,
+.inline-form select {
+    padding: 10px 12px;
+    border: 1px solid #dfe6f0;
+    border-radius: 8px;
+    background: white;
+    color: var(--text);
+    font: inherit;
+    outline: none;
+}
+
+.form-field textarea {
+    width: 100%;
+    resize: vertical;
+}
+
+.wrap-cell {
+    min-width: 180px;
+    max-width: 300px;
+    white-space: normal;
+}
+
+.review-form {
+    display: grid;
+    gap: 8px;
+    min-width: 230px;
+}
+
+.approve-button,
+.reject-button {
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 7px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.approve-button {
+    background: #128358;
+}
+
+.reject-button {
+    margin-left: 5px;
+    background: var(--red);
 }
 
 .inline-form {
@@ -840,6 +916,7 @@ details summary {
 
     .stats-grid,
     .employee-form,
+    .leave-form,
     .attendance-details {
         grid-template-columns: 1fr;
     }

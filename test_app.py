@@ -23,7 +23,7 @@ class AttendanceAppTests(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
         connection = get_connection()
-        for table in ("attendance_audit", "attendance", "holidays", "work_schedules", "employees"):
+        for table in ("attendance_audit", "leave_requests", "attendance", "holidays", "work_schedules", "employees"):
             connection.execute(f"DELETE FROM {table}")
         connection.execute("""
             INSERT INTO employees(id, employee_code, full_name, password_hash, role)
@@ -104,6 +104,31 @@ class AttendanceAppTests(unittest.TestCase):
         response = self.client.get(f"/admin/reports/export?start={today_pk().isoformat()}&end={today_pk().isoformat()}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data[:2], b"PK")
+
+    def test_employee_requests_leave_and_admin_approves_it(self):
+        self.login()
+        start = (today_pk() + timedelta(days=1)).isoformat()
+        response = self.client.post("/leave", data={
+            "csrf_token": self.csrf(), "leave_type": "Annual",
+            "start_date": start, "end_date": start, "reason": "Family event",
+        }, follow_redirects=True)
+        self.assertIn(b"Leave request submitted", response.data)
+
+        connection = get_connection()
+        leave_id = connection.execute("SELECT id FROM leave_requests WHERE employee_id=2").fetchone()[0]
+        connection.close()
+
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.login(admin=True)
+        response = self.client.post(f"/admin/leaves/{leave_id}/review", data={
+            "csrf_token": self.csrf(), "action": "approved", "reviewer_note": "Approved",
+        }, follow_redirects=True)
+        self.assertIn(b"Leave request approved", response.data)
+
+        connection = get_connection()
+        status = connection.execute("SELECT status FROM leave_requests WHERE id=?", (leave_id,)).fetchone()[0]
+        connection.close()
+        self.assertEqual(status, "approved")
 
 
 if __name__ == "__main__":

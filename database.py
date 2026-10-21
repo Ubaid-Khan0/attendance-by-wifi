@@ -101,6 +101,26 @@ def create_tables():
                 FOREIGN KEY (admin_id) REFERENCES employees(id)
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS leave_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL,
+                leave_type TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+                reviewer_note TEXT,
+                reviewed_by INTEGER,
+                reviewed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees(id),
+                FOREIGN KEY (reviewed_by) REFERENCES employees(id)
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_employee_dates ON leave_requests(employee_id, start_date, end_date)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status)")
         connection.commit()
     finally:
         connection.close()

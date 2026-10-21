@@ -287,6 +287,10 @@ def build_report(connection, start, end, employee_id="", department="", label=""
     records = connection.execute("SELECT * FROM attendance WHERE attendance_date BETWEEN ? AND ?", (start, end)).fetchall()
     by_key = {(r["employee_id"], r["attendance_date"]): r for r in records}
     holidays = {r[0] for r in connection.execute("SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN ? AND ?", (start, end))}
+    approved_leave = connection.execute("""
+        SELECT employee_id, start_date, end_date FROM leave_requests
+        WHERE status='approved' AND start_date <= ? AND end_date >= ?
+    """, (end, start)).fetchall()
     rows, day = [], date.fromisoformat(start)
     while day <= date.fromisoformat(end):
         day_text = day.isoformat()
@@ -297,7 +301,8 @@ def build_report(connection, start, end, employee_id="", department="", label=""
                 if day_text < created or (employee["deactivated_at"] and day_text > employee["deactivated_at"][:10]):
                     continue
                 record = by_key.get((employee["id"], day_text))
-                labels = labels_for(day_text, record["check_in"] if record else None, record["check_out"] if record else None, schedule, record["is_valid"] if record else True)
+                on_leave = any(item["employee_id"] == employee["id"] and item["start_date"] <= day_text <= item["end_date"] for item in approved_leave)
+                labels = ["On Leave"] if on_leave and not record else labels_for(day_text, record["check_in"] if record else None, record["check_out"] if record else None, schedule, record["is_valid"] if record else True)
                 row = {"record_id": record["id"] if record else None, "employee_code": employee["employee_code"], "full_name": employee["full_name"], "department": employee["department"] or "", "date": day_text, "check_in": record["check_in"] if record else None, "check_out": record["check_out"] if record else None, "labels": labels}
                 if not label or label in labels:
                     rows.append(row)
@@ -312,11 +317,107 @@ def admin_dashboard():
     try:
         today = today_pk().isoformat()
         rows = build_report(connection, today, today)
-        counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Not Yet Checked In", "Left Early")}
+        counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Not Yet Checked In", "Left Early", "On Leave")}
         total = connection.execute("SELECT COUNT(*) FROM employees WHERE is_active=1").fetchone()[0]
+        pending_leave = connection.execute("SELECT COUNT(*) FROM leave_requests WHERE status='pending'").fetchone()[0]
     finally:
         connection.close()
-    return render_template("admin_dashboard.html", rows=rows, counts=counts, total=total)
+    return render_template("admin_dashboard.html", rows=rows, counts=counts, total=total, pending_leave=pending_leave)
+
+
+@app.route("/leave", methods=["GET", "POST"])
+@login_required
+def leave_requests():
+    connection = get_connection()
+    try:
+        if request.method == "POST":
+            leave_type = request.form.get("leave_type", "").strip()
+            start_text = request.form.get("start_date", "").strip()
+            end_text = request.form.get("end_date", "").strip()
+            reason = request.form.get("reason", "").strip()
+            try:
+                start_date = date.fromisoformat(start_text)
+                end_date = date.fromisoformat(end_text)
+            except ValueError:
+                start_date = end_date = None
+            overlap = None
+            if start_date and end_date:
+                overlap = connection.execute("""
+                    SELECT 1 FROM leave_requests
+                    WHERE employee_id=? AND status IN ('pending', 'approved')
+                      AND start_date <= ? AND end_date >= ?
+                """, (session["user_id"], end_text, start_text)).fetchone()
+            if leave_type not in {"Annual", "Sick", "Casual", "Unpaid"}:
+                flash("Select a valid leave type.", "error")
+            elif not start_date or not end_date or end_date < start_date:
+                flash("Enter a valid leave date range.", "error")
+            elif not reason:
+                flash("Please provide a reason for your leave.", "error")
+            elif overlap:
+                flash("You already have a pending or approved request for these dates.", "error")
+            else:
+                connection.execute("""
+                    INSERT INTO leave_requests(employee_id, leave_type, start_date, end_date, reason)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (session["user_id"], leave_type, start_text, end_text, reason))
+                connection.commit()
+                flash("Leave request submitted.", "success")
+                return redirect(url_for("leave_requests"))
+        requests = connection.execute("""
+            SELECT * FROM leave_requests WHERE employee_id=? ORDER BY created_at DESC, id DESC
+        """, (session["user_id"],)).fetchall()
+    finally:
+        connection.close()
+    return render_template("leave.html", requests=requests, today=today_pk().isoformat())
+
+
+@app.get("/admin/leaves")
+@admin_required
+def admin_leaves():
+    status = request.args.get("status", "pending")
+    if status not in {"pending", "approved", "rejected", "all"}:
+        status = "pending"
+    connection = get_connection()
+    try:
+        requests = connection.execute("""
+            SELECT l.*, e.full_name, e.employee_code, e.department,
+                   reviewer.full_name AS reviewer_name
+            FROM leave_requests l
+            JOIN employees e ON e.id=l.employee_id
+            LEFT JOIN employees reviewer ON reviewer.id=l.reviewed_by
+            WHERE (?='all' OR l.status=?)
+            ORDER BY CASE l.status WHEN 'pending' THEN 0 ELSE 1 END, l.created_at DESC
+        """, (status, status)).fetchall()
+    finally:
+        connection.close()
+    return render_template("admin_leaves.html", requests=requests, status=status)
+
+
+@app.post("/admin/leaves/<int:leave_id>/review")
+@admin_required
+def review_leave(leave_id):
+    action = request.form.get("action", "")
+    note = request.form.get("reviewer_note", "").strip()
+    if action not in {"approved", "rejected"}:
+        abort(400, "Invalid leave decision.")
+    connection = get_connection()
+    try:
+        leave = connection.execute("SELECT status FROM leave_requests WHERE id=?", (leave_id,)).fetchone()
+        if not leave:
+            abort(404)
+        if leave["status"] != "pending":
+            flash("This leave request has already been reviewed.", "error")
+        else:
+            connection.execute("""
+                UPDATE leave_requests
+                SET status=?, reviewer_note=?, reviewed_by=?, reviewed_at=?
+                WHERE id=?
+            """, (action, note or None, session["user_id"], now_pk().isoformat(sep=" ", timespec="seconds"), leave_id))
+            connection.commit()
+            flash(f"Leave request {action}.", "success")
+    finally:
+        connection.close()
+    return redirect(url_for("admin_leaves"))
 
 
 @app.route("/admin/employees")
