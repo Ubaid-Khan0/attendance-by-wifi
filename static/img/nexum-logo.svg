@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Nexum Global Solutions</title>
+  <defs><linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse"><stop stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+  <path d="M32 3 56 17v30L32 61 8 47V17L32 3Z" fill="#0b1220" stroke="url(#g)" stroke-width="3"/>
+  <path d="M18 44V20h7l14 15V20h7v24h-7L25 29v15h-7Z" fill="url(#g)"/>
+</svg>

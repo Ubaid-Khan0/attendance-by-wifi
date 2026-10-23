@@ -1,1 +1,26 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ 'Admin' if admin else 'Employee' }} Login</title><link rel="stylesheet" href="{{ url_for('static',filename='css/style.css') }}"></head><body class="auth-page"><main class="auth-card"><div class="brand auth-brand"><div class="brand-icon">A</div><div><h2>AttendancePro</h2><p>{{ 'ADMIN PORTAL' if admin else 'EMPLOYEE PORTAL' }}</p></div></div><h1>{{ 'Admin' if admin else 'Employee' }} Login</h1>{% for category,message in get_flashed_messages(with_categories=true) %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}<form method="post" class="auth-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="form-field"><label>User ID</label><input name="employee_code" required autofocus autocomplete="username"></div><div class="form-field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div><button class="primary-button">Log In</button></form><a class="back-link" href="{{ url_for('employee_login' if admin else 'admin_login') }}">{{ 'Employee' if admin else 'Admin' }} login →</a></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ 'Admin' if admin else 'Employee' }} Login · Nexum Global Solutions</title>
+    <link rel="stylesheet" href="{{ url_for('static',filename='css/style.css',v='7') }}">
+</head>
+<body class="auth-page">
+<div class="auth-shell">
+    <div class="auth-visual"><img src="{{ url_for('static',filename='img/nexum-company.jpg') }}" alt="Nexum Global Solutions"></div>
+    <main class="auth-card">
+        <div class="brand auth-brand"><img class="brand-logo" src="{{ url_for('static',filename='img/nexum-logo.svg') }}" alt="Nexum Global Solutions logo"><div><h2>Nexum Global Solutions</h2><p>{{ 'ADMIN PORTAL' if admin else 'EMPLOYEE PORTAL' }}</p></div></div>
+        <h1>{{ 'Admin' if admin else 'Employee' }} Login</h1>
+        {% for category,message in get_flashed_messages(with_categories=true) %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+        <form method="post" class="auth-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="form-field"><label>User ID</label><input name="employee_code" required autofocus autocomplete="username"></div>
+            <div class="form-field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
+            <button class="primary-button">Log In</button>
+        </form>
+        <a class="back-link" href="{{ url_for('employee_login' if admin else 'admin_login') }}">{{ 'Employee' if admin else 'Admin' }} login →</a>
+    </main>
+</div>
+</body>
+</html>
