@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Leave History{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>Leave History</h1><p class="subtitle">Review current and previous employee leave requests.</p></div></header>
+<section class="content-card">
+    <div class="section-header"><h2>Employee Leave Records</h2><form method="get" class="inline-form"><select name="employee_id"><option value="">All employees</option>{% for person in people %}<option value="{{ person.id }}" {% if employee_id == person.id|string %}selected{% endif %}>{{ person.full_name }} ({{ person.employee_code }})</option>{% endfor %}</select><select name="status"><option value="all" {% if status == 'all' %}selected{% endif %}>All statuses</option><option value="pending" {% if status == 'pending' %}selected{% endif %}>Pending</option><option value="approved" {% if status == 'approved' %}selected{% endif %}>Approved</option><option value="rejected" {% if status == 'rejected' %}selected{% endif %}>Rejected</option></select><button class="secondary-button">Filter</button></form></div>
+    <div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th>Reviewed By</th></tr></thead><tbody>
+    {% for item in requests %}<tr><td>{{ item.full_name }}<small>{{ item.employee_code }} · {{ item.department or 'No department' }}</small></td><td>{{ item.leave_type }}{% if item.attachment_name %}<small><a class="card-link" href="{{ url_for('leave_evidence', leave_id=item.id) }}">View picture</a></small>{% endif %}</td><td>{{ item.start_date }} to {{ item.end_date }}</td><td class="wrap-cell">{{ item.reason }}</td><td><span class="status-badge {{ item.status }}">{{ item.status|title }}</span></td><td>{{ item.reviewer_name or '—' }}<small>{{ item.reviewer_note or 'No reviewer note' }}</small></td></tr>
+    {% else %}<tr><td colspan="6">No leave history found.</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{% endblock %}

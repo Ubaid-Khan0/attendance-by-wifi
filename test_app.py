@@ -73,9 +73,10 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/login").status_code, 200)
         self.assertEqual(self.login().status_code, 200)
         self.assertEqual(self.client.get("/admin").status_code, 403)
+        self.assertEqual(self.client.get("/leave/history").status_code, 403)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
         self.assertEqual(self.login(admin=True).status_code, 200)
-        for path in ("/admin", "/admin/settings", "/admin/reports", "/attendance"):
+        for path in ("/admin", "/admin/settings", "/admin/reports", "/attendance", "/leave/history"):
             self.assertEqual(self.client.get(path).status_code, 200, path)
         self.assertEqual(self.client.get("/hr/employees").status_code, 403)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
@@ -183,6 +184,8 @@ class AttendanceAppTests(unittest.TestCase):
             "start_date": start, "end_date": start, "reason": "Religious or family event",
         }, follow_redirects=True)
         self.assertIn(b"Leave request submitted", response.data)
+        self.assertIn(b"Request History", response.data)
+        self.assertIn(b"Religious or family event", response.data)
 
         connection = get_connection()
         leave_id = connection.execute("SELECT id FROM leave_requests WHERE employee_id=2").fetchone()[0]
@@ -199,6 +202,16 @@ class AttendanceAppTests(unittest.TestCase):
         status = connection.execute("SELECT status FROM leave_requests WHERE id=?", (leave_id,)).fetchone()[0]
         connection.close()
         self.assertEqual(status, "approved")
+        history = self.client.get("/leave/history")
+        self.assertIn(b"Leave History", history.data)
+        self.assertIn(b"Test Employee", history.data)
+        self.assertIn(b"Approved", history.data)
+
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.login_hr()
+        history = self.client.get("/leave/history")
+        self.assertEqual(history.status_code, 200)
+        self.assertIn(b"Test Employee", history.data)
 
     def test_sick_and_emergency_leave_require_picture(self):
         self.login()

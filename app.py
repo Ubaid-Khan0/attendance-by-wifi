@@ -542,7 +542,7 @@ def leave_evidence(leave_id):
         connection.close()
     if not item or not item["attachment_name"]:
         abort(404)
-    if session.get("role") != "admin" and item["employee_id"] != session["user_id"]:
+    if session.get("role") not in {"admin", "hr"} and item["employee_id"] != session["user_id"]:
         abort(403)
     return send_from_directory(LEAVE_UPLOAD_FOLDER, item["attachment_name"], as_attachment=True)
 
@@ -582,6 +582,33 @@ def admin_leaves():
     finally:
         connection.close()
     return render_template("admin_leaves.html", requests=requests, status=status)
+
+
+@app.get("/leave/history")
+@payroll_required
+def leave_history():
+    status = request.args.get("status", "all")
+    employee_id = request.args.get("employee_id", "").strip()
+    if status not in {"pending", "approved", "rejected", "all"}:
+        status = "all"
+    if employee_id and not employee_id.isdigit():
+        employee_id = ""
+    connection = get_connection()
+    try:
+        requests = connection.execute("""
+            SELECT l.*, e.full_name, e.employee_code, e.department,
+                   reviewer.full_name AS reviewer_name
+            FROM leave_requests l
+            JOIN employees e ON e.id=l.employee_id
+            LEFT JOIN employees reviewer ON reviewer.id=l.reviewed_by
+            WHERE (?='all' OR l.status=?)
+              AND (?='' OR l.employee_id=?)
+            ORDER BY l.created_at DESC, l.id DESC
+        """, (status, status, employee_id, employee_id)).fetchall()
+        people = connection.execute("SELECT id,full_name,employee_code FROM employees WHERE role!='admin' ORDER BY full_name").fetchall()
+    finally:
+        connection.close()
+    return render_template("leave_history.html", requests=requests, people=people, status=status, employee_id=employee_id)
 
 
 @app.post("/admin/leaves/<int:leave_id>/review")
