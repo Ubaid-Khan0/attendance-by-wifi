@@ -39,10 +39,23 @@ def create_tables():
             "must_change_password INTEGER NOT NULL DEFAULT 0",
             "failed_login_attempts INTEGER NOT NULL DEFAULT 0", "locked_until TEXT",
             "deactivated_at TEXT", "cnic TEXT", "email TEXT",
+            "monthly_salary REAL", "bank_name TEXT", "account_number TEXT",
         ):
             _add_column(connection, "employees", definition)
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_cnic ON employees(cnic) WHERE cnic IS NOT NULL")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_email ON employees(LOWER(email)) WHERE email IS NOT NULL")
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS salary_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL,
+                monthly_salary REAL NOT NULL,
+                effective_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                changed_by INTEGER NOT NULL,
+                FOREIGN KEY (employee_id) REFERENCES employees(id),
+                FOREIGN KEY (changed_by) REFERENCES employees(id)
+            )
+        """)
 
         connection.execute("""
             CREATE TABLE IF NOT EXISTS attendance (
@@ -92,6 +105,9 @@ def create_tables():
             )
         """)
         connection.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('allowed_networks', '127.0.0.0/8,::1/128')")
+        connection.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('late_deduction_per_second', '0')")
+        connection.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('absent_deduction_per_day', '0')")
+        connection.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('leave_deduction_per_day', '0')")
         connection.execute("""
             CREATE TABLE IF NOT EXISTS attendance_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

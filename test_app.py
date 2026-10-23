@@ -28,7 +28,7 @@ class AttendanceAppTests(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
         connection = get_connection()
-        for table in ("attendance_audit", "leave_requests", "attendance", "holidays", "work_schedules", "employees"):
+        for table in ("attendance_audit", "leave_requests", "attendance", "salary_history", "holidays", "work_schedules", "employees"):
             connection.execute(f"DELETE FROM {table}")
         connection.execute("""
             INSERT INTO employees(id, employee_code, full_name, password_hash, role)
@@ -230,6 +230,7 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "MGR001",
             "full_name": "Team Manager", "department": "Operations",
             "cnic": "3520212345671", "email": "manager@example.com",
+            "monthly_salary": "80000", "bank_name": "Test Bank", "account_number": "PK001",
             "role": "manager", "password": "Manager123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)
@@ -243,6 +244,7 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "CHANGED",
             "full_name": "Updated Manager", "department": "Sales",
             "cnic": "3520212345671", "email": "manager@example.com",
+            "monthly_salary": "90000", "bank_name": "Test Bank", "account_number": "PK001",
             "role": "employee", "is_active": "on",
         }, follow_redirects=True)
         self.assertIn(b"Employee details updated", response.data)
@@ -251,6 +253,10 @@ class AttendanceAppTests(unittest.TestCase):
         connection.close()
         self.assertEqual(updated["employee_code"], "MGR001")
         self.assertEqual((updated["full_name"], updated["department"], updated["role"]), ("Updated Manager", "Sales", "employee"))
+        connection = get_connection()
+        salaries = [row[0] for row in connection.execute("SELECT monthly_salary FROM salary_history WHERE employee_id=? ORDER BY id", (manager["id"],)).fetchall()]
+        connection.close()
+        self.assertEqual(salaries, [80000, 90000])
 
     def test_hr_can_assign_intern_role(self):
         self.login_hr()
@@ -258,6 +264,7 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "INT001",
             "full_name": "Test Intern", "department": "Technology",
             "cnic": "3520212345672", "email": "intern@example.com",
+            "monthly_salary": "40000", "bank_name": "Test Bank", "account_number": "PK002",
             "role": "intern", "password": "Intern123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)
@@ -272,6 +279,7 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "OLD001",
             "full_name": "Former Employee", "department": "Sales",
             "cnic": "3520212345674", "email": "former@example.com",
+            "monthly_salary": "50000", "bank_name": "Test Bank", "account_number": "PK004",
             "role": "employee", "password": "Welcome123",
         })
         connection = get_connection()
@@ -292,9 +300,32 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "OLD001",
             "full_name": "Different Person", "department": "Finance",
             "cnic": "3520212345675", "email": "different@example.com",
+            "monthly_salary": "55000", "bank_name": "Test Bank", "account_number": "PK005",
             "role": "employee", "password": "Welcome123",
         }, follow_redirects=True)
         self.assertIn(b"including in removed employee records", response.data)
+
+    def test_admin_and_hr_can_view_and_export_payroll(self):
+        connection = get_connection()
+        connection.execute("UPDATE employees SET monthly_salary=60000,bank_name='Test Bank',account_number='PKEMP001' WHERE id=2")
+        connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(2,60000,1)")
+        connection.commit(); connection.close()
+
+        self.login(admin=True)
+        response = self.client.post("/payroll", data={
+            "csrf_token": self.csrf(), "month": today_pk().strftime("%Y-%m"),
+            "late_deduction_per_second": "0.50", "absent_deduction_per_day": "1000",
+            "leave_deduction_per_day": "500",
+        }, follow_redirects=True)
+        self.assertIn(b"Payroll deduction rates saved", response.data)
+        export = self.client.get(f"/payroll/export?month={today_pk().strftime('%Y-%m')}")
+        self.assertEqual(export.status_code, 200)
+        self.assertEqual(export.data[:2], b"PK")
+        export.close()
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+
+        response = self.login_hr()
+        self.assertIn(b"Payroll", self.client.get("/payroll").data)
 
     def test_admin_can_create_first_hr_only(self):
         connection = get_connection()
@@ -308,6 +339,7 @@ class AttendanceAppTests(unittest.TestCase):
             "csrf_token": self.csrf(), "employee_code": "HR002",
             "full_name": "First HR", "department": "Human Resources",
             "cnic": "3520212345673", "email": "hr2@example.com",
+            "monthly_salary": "70000", "bank_name": "Test Bank", "account_number": "PK003",
             "role": "employee", "password": "Welcome123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)

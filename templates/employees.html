@@ -10,6 +10,9 @@
         <div class="form-field"><label>Full name</label><input name="full_name" required></div>
         <div class="form-field"><label>CNIC</label><input name="cnic" inputmode="numeric" minlength="13" maxlength="15" placeholder="35202-1234567-1" required></div>
         <div class="form-field"><label>Email address</label><input type="email" name="email" required></div>
+        <div class="form-field"><label>Monthly salary</label><input type="number" name="monthly_salary" min="0.01" step="0.01" required></div>
+        <div class="form-field"><label>Bank name</label><input name="bank_name" required></div>
+        <div class="form-field"><label>Account number / IBAN</label><input name="account_number" required></div>
         <div class="form-field"><label>Department</label><input name="department"></div>
         <div class="form-field"><label>Role</label>{% if bootstrap_hr %}<input type="hidden" name="role" value="hr"><input value="HR" disabled>{% else %}<select name="role" required><option value="employee">Employee</option><option value="intern">Intern</option><option value="manager">Manager</option><option value="hr">HR</option></select>{% endif %}</div>
         <div class="form-field"><label>Temporary password</label><input type="password" name="password" required></div>

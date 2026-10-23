@@ -1,8 +1,10 @@
 import csv
 import io
 import ipaddress
+import math
 import os
 import re
+from calendar import monthrange
 import secrets
 import sqlite3
 from datetime import date, datetime, time, timedelta
@@ -151,6 +153,16 @@ def hr_required(view):
     @login_required
     def wrapped(*args, **kwargs):
         if session.get("role") != "hr":
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def payroll_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if session.get("role") not in {"admin", "hr"}:
             abort(403)
         return view(*args, **kwargs)
     return wrapped
@@ -613,6 +625,12 @@ def employees():
 def add_employee():
     code, name, department, password, role = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password", "role"))
     cnic, email = employee_contact_details(request.form)
+    bank_name = request.form.get("bank_name", "").strip()
+    account_number = request.form.get("account_number", "").strip()
+    try:
+        monthly_salary = float(request.form.get("monthly_salary", ""))
+    except ValueError:
+        monthly_salary = 0
     bootstrap_hr = session.get("role") == "admin"
     if bootstrap_hr:
         role = "hr"
@@ -622,9 +640,12 @@ def add_employee():
         flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
     if not valid_employee_contact(cnic, email):
         flash("Enter a valid 13-digit CNIC and email address.", "error"); return redirect(url_for("employees"))
+    if not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number:
+        flash("Enter a valid monthly salary, bank name, and account number.", "error"); return redirect(url_for("employees"))
     connection = get_connection()
     try:
-        connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,password_hash,must_change_password,role) VALUES(?,?,?,?,?,?,1,?)", (code, name, department or None, cnic, email, generate_password_hash(password), role))
+        cursor = connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,monthly_salary,bank_name,account_number,password_hash,must_change_password,role) VALUES(?,?,?,?,?,?,?,?,?,1,?)", (code, name, department or None, cnic, email, monthly_salary, bank_name, account_number, generate_password_hash(password), role))
+        connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (cursor.lastrowid, monthly_salary, session["user_id"]))
         connection.commit(); flash("Employee added.", "success")
         if bootstrap_hr:
             return redirect(url_for("admin_dashboard"))
@@ -650,12 +671,20 @@ def edit_employee(employee_id):
             name = request.form.get("full_name", "").strip()
             department = request.form.get("department", "").strip()
             cnic, email = employee_contact_details(request.form)
+            bank_name = request.form.get("bank_name", "").strip()
+            account_number = request.form.get("account_number", "").strip()
+            try:
+                monthly_salary = float(request.form.get("monthly_salary", ""))
+            except ValueError:
+                monthly_salary = 0
             role = request.form.get("role", "").strip()
             active = 1 if request.form.get("is_active") else 0
             if not name:
                 flash("Full name is required.", "error")
             elif not valid_employee_contact(cnic, email):
                 flash("Enter a valid 13-digit CNIC and email address.", "error")
+            elif not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number:
+                flash("Enter a valid monthly salary, bank name, and account number.", "error")
             elif role not in {"employee", "intern", "manager", "hr"}:
                 flash("Select a valid employee role.", "error")
             elif employee_id == session["user_id"] and (role != "hr" or not active):
@@ -664,9 +693,11 @@ def edit_employee(employee_id):
                 deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
                 try:
                     connection.execute("""
-                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, role=?, is_active=?, deactivated_at=?
+                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, monthly_salary=?, bank_name=?, account_number=?, role=?, is_active=?, deactivated_at=?
                         WHERE id=?
-                    """, (name, department or None, cnic, email, role, active, deactivated, employee_id))
+                    """, (name, department or None, cnic, email, monthly_salary, bank_name, account_number, role, active, deactivated, employee_id))
+                    if employee["monthly_salary"] is None or float(employee["monthly_salary"]) != monthly_salary:
+                        connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (employee_id, monthly_salary, session["user_id"]))
                     connection.commit()
                 except sqlite3.IntegrityError:
                     connection.rollback()
@@ -713,6 +744,112 @@ def reset_password(employee_id):
             connection.execute("UPDATE employees SET password_hash=?, must_change_password=1 WHERE id=?", (generate_password_hash(password), employee_id)); connection.commit(); flash("Temporary password set.", "success")
     finally: connection.close()
     return redirect(url_for("employees"))
+
+
+def payroll_period(value):
+    try:
+        start = datetime.strptime(value, "%Y-%m").date().replace(day=1)
+    except (TypeError, ValueError):
+        start = today_pk().replace(day=1)
+    end = start.replace(day=monthrange(start.year, start.month)[1])
+    return start, end
+
+
+def build_payroll(connection, start, end):
+    rate_rows = connection.execute("SELECT key,value FROM settings WHERE key IN ('late_deduction_per_second','absent_deduction_per_day','leave_deduction_per_day')").fetchall()
+    rates = {row["key"]: float(row["value"]) for row in rate_rows}
+    employees = connection.execute("""
+        SELECT * FROM employees
+        WHERE role!='admin' AND monthly_salary IS NOT NULL
+          AND DATE(created_at) <= ?
+          AND (deactivated_at IS NULL OR DATE(deactivated_at) >= ?)
+        ORDER BY full_name
+    """, (end.isoformat(), start.isoformat())).fetchall()
+    payroll = []
+    for employee in employees:
+        attendance_rows = build_report(connection, start.isoformat(), end.isoformat(), str(employee["id"]))
+        absent_days = sum("Absent" in row["labels"] for row in attendance_rows)
+        leave_days = sum("On Leave" in row["labels"] for row in attendance_rows)
+        late_seconds = 0
+        for row in attendance_rows:
+            if "Late" not in row["labels"] or not row["check_in"]:
+                continue
+            schedule = current_schedule(connection, row["date"])
+            if schedule:
+                allowed = datetime.combine(date.fromisoformat(row["date"]), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"])
+                late_seconds += max(0, int((datetime.fromisoformat(row["check_in"]) - allowed).total_seconds()))
+        late_deduction = late_seconds * rates["late_deduction_per_second"]
+        absent_deduction = absent_days * rates["absent_deduction_per_day"]
+        leave_deduction = leave_days * rates["leave_deduction_per_day"]
+        total_deduction = late_deduction + absent_deduction + leave_deduction
+        salary_history = connection.execute("SELECT monthly_salary FROM salary_history WHERE employee_id=? ORDER BY effective_at DESC,id DESC LIMIT 2", (employee["id"],)).fetchall()
+        previous_salary = salary_history[1]["monthly_salary"] if len(salary_history) > 1 else None
+        payroll.append({
+            "employee_code": employee["employee_code"], "full_name": employee["full_name"],
+            "department": employee["department"] or "", "bank_name": employee["bank_name"] or "",
+            "account_number": employee["account_number"] or "", "salary": float(employee["monthly_salary"]),
+            "previous_salary": previous_salary, "late_seconds": late_seconds, "absent_days": absent_days,
+            "leave_days": leave_days, "late_deduction": late_deduction,
+            "absent_deduction": absent_deduction, "leave_deduction": leave_deduction,
+            "total_deduction": total_deduction, "net_salary": max(0, float(employee["monthly_salary"]) - total_deduction),
+        })
+    return payroll, rates
+
+
+@app.route("/payroll", methods=["GET", "POST"])
+@payroll_required
+def payroll():
+    connection = get_connection()
+    try:
+        if request.method == "POST":
+            try:
+                rates = {key: float(request.form.get(key, "")) for key in ("late_deduction_per_second", "absent_deduction_per_day", "leave_deduction_per_day")}
+                if any(not math.isfinite(value) or value < 0 for value in rates.values()):
+                    raise ValueError
+                for key, value in rates.items():
+                    connection.execute("UPDATE settings SET value=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE key=?", (str(value), session["user_id"], key))
+                connection.commit()
+                flash("Payroll deduction rates saved.", "success")
+            except ValueError:
+                flash("Enter valid deduction amounts of zero or more.", "error")
+        start, end = payroll_period(request.values.get("month"))
+        rows, rates = build_payroll(connection, start, end)
+    finally:
+        connection.close()
+    return render_template("payroll.html", rows=rows, rates=rates, month=start.strftime("%Y-%m"))
+
+
+@app.get("/payroll/export")
+@payroll_required
+def export_payroll():
+    start, end = payroll_period(request.args.get("month"))
+    connection = get_connection()
+    try:
+        rows, rates = build_payroll(connection, start, end)
+    finally:
+        connection.close()
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        abort(500, "Excel export requires openpyxl.")
+    book = Workbook(); sheet = book.active; sheet.title = "Payroll"
+    headers = ["Employee ID", "Name", "Department", "Bank", "Account Number", "Current Salary", "Previous Salary", "Late Seconds", "Absent Days", "Leave Days", "Late Deduction", "Absent Deduction", "Leave Deduction", "Total Deduction", "Net Salary"]
+    sheet.append([f"Payroll for {start.strftime('%B %Y')}"]); sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    sheet.append(headers)
+    for row in rows:
+        sheet.append([row["employee_code"], row["full_name"], row["department"], row["bank_name"], row["account_number"], row["salary"], row["previous_salary"], row["late_seconds"], row["absent_days"], row["leave_days"], row["late_deduction"], row["absent_deduction"], row["leave_deduction"], row["total_deduction"], row["net_salary"]])
+    sheet["A1"].font = Font(size=14, bold=True, color="FFFFFF")
+    for cell in sheet[1]: cell.fill = PatternFill("solid", fgColor="1E3A5F")
+    for cell in sheet[2]: cell.font = Font(bold=True, color="FFFFFF"); cell.fill = PatternFill("solid", fgColor="2563EB")
+    sheet.freeze_panes = "A3"; sheet.auto_filter.ref = f"A2:O{max(2, sheet.max_row)}"
+    for column in "FGKLMNO":
+        for cell in sheet[column][2:]: cell.number_format = '#,##0.00'
+    for column_number, column_cells in enumerate(sheet.columns, 1):
+        sheet.column_dimensions[get_column_letter(column_number)].width = min(24, max(12, max(len(str(cell.value or "")) for cell in column_cells) + 2))
+    output = io.BytesIO(); book.save(output); output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"payroll-{start.strftime('%Y-%m')}.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/admin/settings", methods=["GET", "POST"])
