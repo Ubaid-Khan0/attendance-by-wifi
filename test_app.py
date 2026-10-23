@@ -109,7 +109,7 @@ class AttendanceAppTests(unittest.TestCase):
     def test_check_in_is_unique_and_check_out_works(self):
         self.login()
         token = self.csrf()
-        first = self.client.post("/attendance/check-in", data={"csrf_token": token, "late_reason": "Traffic delay"}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
+        first = self.client.post("/attendance/check-in", data={"csrf_token": token, "late_reason": "Heavy traffic congestion"}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"Check-in recorded", first.data)
         second = self.client.post("/attendance/check-in", data={"csrf_token": token}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"already have a check-in", second.data)
@@ -126,7 +126,7 @@ class AttendanceAppTests(unittest.TestCase):
         token = self.csrf()
         rejected = self.client.post(
             "/attendance/check-in",
-            data={"csrf_token": token, "late_reason": "Traffic delay"},
+            data={"csrf_token": token, "late_reason": "Heavy traffic congestion"},
             headers={"X-Real-IP": "203.0.113.20"},
             follow_redirects=True,
         )
@@ -134,7 +134,7 @@ class AttendanceAppTests(unittest.TestCase):
 
         accepted = self.client.post(
             "/attendance/check-in",
-            data={"csrf_token": token, "late_reason": "Traffic delay"},
+            data={"csrf_token": token, "late_reason": "Heavy traffic congestion"},
             headers={"X-Real-IP": "198.51.100.10"},
             follow_redirects=True,
         )
@@ -180,7 +180,7 @@ class AttendanceAppTests(unittest.TestCase):
         start = (today_pk() + timedelta(days=1)).isoformat()
         response = self.client.post("/leave", data={
             "csrf_token": self.csrf(), "leave_type": "Annual",
-            "start_date": start, "end_date": start, "reason": "Family event",
+            "start_date": start, "end_date": start, "reason": "Religious or family event",
         }, follow_redirects=True)
         self.assertIn(b"Leave request submitted", response.data)
 
@@ -205,13 +205,13 @@ class AttendanceAppTests(unittest.TestCase):
         start = (today_pk() + timedelta(days=2)).isoformat()
         response = self.client.post("/leave", data={
             "csrf_token": self.csrf(), "leave_type": "Sick",
-            "start_date": start, "end_date": start, "reason": "Medical rest",
+            "start_date": start, "end_date": start, "reason": "Other", "reason_other": "Medical rest",
         }, follow_redirects=True)
         self.assertIn(b"require a JPG, PNG, or WebP image", response.data)
 
         response = self.client.post("/leave", data={
             "csrf_token": self.csrf(), "leave_type": "Emergency",
-            "start_date": start, "end_date": start, "reason": "Urgent family matter",
+            "start_date": start, "end_date": start, "reason": "Family emergency",
             "evidence": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"test-image"), "evidence.png"),
         }, content_type="multipart/form-data", follow_redirects=True)
         self.assertIn(b"Leave request submitted", response.data)

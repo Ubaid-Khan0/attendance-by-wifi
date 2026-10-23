@@ -9,7 +9,8 @@
         <div class="form-field"><label>Leave type</label><select name="leave_type" id="leave-type" required><option value="">Select type</option><option>Annual</option><option>Sick</option><option>Emergency</option><option>Casual</option><option>Unpaid</option></select></div>
         <div class="form-field"><label>Start date</label><input type="date" name="start_date" min="{{ today }}" required></div>
         <div class="form-field"><label>End date</label><input type="date" name="end_date" min="{{ today }}" required></div>
-        <div class="form-field leave-reason"><label>Reason</label><textarea name="reason" rows="3" maxlength="500" required></textarea></div>
+        <div class="form-field leave-reason"><label>Reason</label><select name="reason" id="leave-reason" required><option value="">Select a reason</option>{% for reason in leave_reasons %}<option>{{ reason }}</option>{% endfor %}<option>Other</option></select></div>
+        <div class="form-field leave-reason" id="leave-reason-other-field" hidden><label>Other reason</label><textarea name="reason_other" id="leave-reason-other" rows="3" maxlength="500" placeholder="Write your reason"></textarea></div>
         <div class="form-field leave-reason"><label>Supporting picture <span id="evidence-note">(required for Sick and Emergency)</span></label><input type="file" id="leave-evidence" name="evidence" accept="image/jpeg,image/png,image/webp"><small>JPG, PNG, or WebP · maximum 5 MB</small></div>
         <button class="primary-button">Submit Request</button>
     </form>
@@ -24,8 +25,19 @@
 <script>
 const leaveType = document.getElementById('leave-type');
 const evidence = document.getElementById('leave-evidence');
+const leaveReason = document.getElementById('leave-reason');
+const leaveReasonOtherField = document.getElementById('leave-reason-other-field');
+const leaveReasonOther = document.getElementById('leave-reason-other');
 function updateEvidenceRequirement() { evidence.required = ['Sick', 'Emergency'].includes(leaveType.value); }
+function updateLeaveReason() {
+    const isOther = leaveReason.value === 'Other';
+    leaveReasonOtherField.hidden = !isOther;
+    leaveReasonOther.required = isOther;
+    if (!isOther) leaveReasonOther.value = '';
+}
 leaveType.addEventListener('change', updateEvidenceRequirement);
+leaveReason.addEventListener('change', updateLeaveReason);
 updateEvidenceRequirement();
+updateLeaveReason();
 </script>
 {% endblock %}

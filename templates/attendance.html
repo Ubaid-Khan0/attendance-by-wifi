@@ -10,7 +10,8 @@
         <form method="post" action="{{ url_for('check_in') }}" enctype="multipart/form-data" class="employee-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             {% if late_check_in %}
-            <div class="form-field"><label>Reason for late check-in</label><input name="late_reason" maxlength="300" required placeholder="Why are you late?"></div>
+            <div class="form-field"><label>Reason for late check-in</label><select name="late_reason" id="late-reason" required><option value="">Select a reason</option>{% for reason in late_reasons %}<option>{{ reason }}</option>{% endfor %}<option>Other</option></select></div>
+            <div class="form-field" id="late-reason-other-field" hidden><label>Other reason</label><input name="late_reason_other" id="late-reason-other" maxlength="300" placeholder="Write your reason"></div>
             <div class="form-field"><label>Picture (optional)</label><input type="file" name="late_picture" accept="image/jpeg,image/png,image/webp"></div>
             {% endif %}
             <button class="primary-button" {% if not network_allowed or not schedule %}disabled{% endif %}>Check In</button>
@@ -25,4 +26,19 @@
 {% for r in records %}<tr><td>{{ r.date }}</td><td>{{ r.check_in or '—' }}</td><td>{{ r.check_out or '—' }}</td><td>{{ r.labels|join(', ') }}</td><td>{{ r.late_reason or '—' }}{% if r.late_picture_name %}<small><a class="card-link" href="{{ url_for('late_check_in_picture', record_id=r.record_id) }}">View picture</a></small>{% endif %}</td></tr>
 {% else %}<tr><td colspan="5">No records in this period.</td></tr>{% endfor %}
 </tbody></table></div></section>
+<script>
+const lateReason = document.getElementById('late-reason');
+if (lateReason) {
+    const otherField = document.getElementById('late-reason-other-field');
+    const otherInput = document.getElementById('late-reason-other');
+    function updateLateReason() {
+        const isOther = lateReason.value === 'Other';
+        otherField.hidden = !isOther;
+        otherInput.required = isOther;
+        if (!isOther) otherInput.value = '';
+    }
+    lateReason.addEventListener('change', updateLateReason);
+    updateLateReason();
+}
+</script>
 {% endblock %}

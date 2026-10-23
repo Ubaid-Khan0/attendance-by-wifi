@@ -20,6 +20,17 @@ from database import create_tables, get_connection
 TZ = ZoneInfo("Asia/Karachi")
 LEAVE_UPLOAD_FOLDER = Path(os.environ.get("LEAVE_UPLOAD_FOLDER", Path(__file__).resolve().parent / "leave_uploads"))
 MAX_LEAVE_IMAGE_BYTES = 5 * 1024 * 1024
+LEAVE_REASONS = (
+    "Bereavement or funeral", "Hospital admission or medical emergency",
+    "Illness or recovery", "Family emergency", "Personal appointment",
+    "Religious or family event", "Travel disruption",
+)
+LATE_REASONS = (
+    "Heavy traffic congestion", "Traffic challan or police stop",
+    "Motorcycle or vehicle puncture", "Vehicle mechanical problem",
+    "Public transport delay", "Medical emergency", "Family emergency",
+    "Severe weather conditions",
+)
 app = Flask(__name__)
 try:
     trusted_proxy_hops = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
@@ -55,6 +66,13 @@ def today_pk():
 
 def valid_password(value):
     return len(value) >= 8 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+def selected_reason(form, field, choices):
+    choice = form.get(field, "").strip()
+    if choice == "Other":
+        return form.get(f"{field}_other", "").strip()
+    return choice if choice in choices else ""
 
 
 def leave_image_extension(upload):
@@ -309,7 +327,7 @@ def my_attendance():
         rows = build_report(connection, start, end, str(session["user_id"]))
     finally:
         connection.close()
-    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, late_check_in=late_check_in, network_allowed=allowed, start=start, end=end)
+    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, late_check_in=late_check_in, late_reasons=LATE_REASONS, network_allowed=allowed, start=start, end=end)
 
 
 @app.post("/attendance/check-in")
@@ -323,7 +341,7 @@ def check_in():
         schedule = current_schedule(connection, today)
         current_time = now_pk()
         is_late = bool(schedule and current_time > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
-        late_reason = request.form.get("late_reason", "").strip()
+        late_reason = selected_reason(request.form, "late_reason", LATE_REASONS)
         picture = request.files.get("late_picture")
         picture_extension = leave_image_extension(picture)
         if not schedule:
@@ -443,7 +461,7 @@ def leave_requests():
             leave_type = request.form.get("leave_type", "").strip()
             start_text = request.form.get("start_date", "").strip()
             end_text = request.form.get("end_date", "").strip()
-            reason = request.form.get("reason", "").strip()
+            reason = selected_reason(request.form, "reason", LEAVE_REASONS)
             evidence = request.files.get("evidence")
             evidence_extension = leave_image_extension(evidence)
             try:
@@ -488,7 +506,7 @@ def leave_requests():
         """, (session["user_id"],)).fetchall()
     finally:
         connection.close()
-    return render_template("leave.html", requests=requests, today=today_pk().isoformat())
+    return render_template("leave.html", requests=requests, today=today_pk().isoformat(), leave_reasons=LEAVE_REASONS)
 
 
 @app.get("/leave/<int:leave_id>/evidence")
