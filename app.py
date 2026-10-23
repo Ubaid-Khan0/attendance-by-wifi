@@ -236,6 +236,8 @@ def attempt_login(role):
 def home():
     if session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
+    if session.get("role") == "hr":
+        return redirect(url_for("hr_dashboard"))
     if session.get("user_id"):
         return redirect(url_for("my_attendance"))
     return redirect(url_for("employee_login"))
@@ -243,8 +245,10 @@ def home():
 
 @app.route("/login", methods=["GET", "POST"])
 def employee_login():
-    if request.method == "POST" and attempt_login("employee"):
-        return redirect(url_for("my_attendance"))
+    if request.method == "POST":
+        user = attempt_login("employee")
+        if user:
+            return redirect(url_for("hr_dashboard" if user["role"] == "hr" else "my_attendance"))
     return render_template("login.html", admin=False)
 
 
@@ -281,7 +285,11 @@ def change_password():
                 connection.commit()
                 session["must_change_password"] = False
                 flash("Password changed.", "success")
-                return redirect(url_for("admin_dashboard" if session["role"] == "admin" else "my_attendance"))
+                if session["role"] == "admin":
+                    return redirect(url_for("admin_dashboard"))
+                if session["role"] == "hr":
+                    return redirect(url_for("hr_dashboard"))
+                return redirect(url_for("my_attendance"))
         finally:
             connection.close()
     return render_template("change_password.html")
@@ -296,11 +304,12 @@ def my_attendance():
     try:
         today_record = connection.execute("SELECT * FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today_pk().isoformat())).fetchone()
         schedule = current_schedule(connection)
+        late_check_in = bool(schedule and now_pk() > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
         allowed = client_on_allowed_network(connection)
         rows = build_report(connection, start, end, str(session["user_id"]))
     finally:
         connection.close()
-    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, network_allowed=allowed, start=start, end=end)
+    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, late_check_in=late_check_in, network_allowed=allowed, start=start, end=end)
 
 
 @app.post("/attendance/check-in")
@@ -308,9 +317,15 @@ def my_attendance():
 def check_in():
     connection = get_connection()
     today = today_pk().isoformat()
+    saved_picture = None
     try:
         connection.execute("BEGIN IMMEDIATE")
         schedule = current_schedule(connection, today)
+        current_time = now_pk()
+        is_late = bool(schedule and current_time > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
+        late_reason = request.form.get("late_reason", "").strip()
+        picture = request.files.get("late_picture")
+        picture_extension = leave_image_extension(picture)
         if not schedule:
             flash("The administrator must configure a work schedule first.", "error")
         elif is_holiday(connection, today) or today_pk().weekday() >= 5:
@@ -319,13 +334,24 @@ def check_in():
             flash("Check-in is only available on the configured office Wi-Fi.", "error")
         elif connection.execute("SELECT 1 FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today)).fetchone():
             flash("You already have a check-in for today.", "error")
+        elif is_late and not late_reason:
+            flash("Please enter a reason for your late check-in.", "error")
+        elif is_late and picture and picture.filename and not picture_extension:
+            flash("Upload a JPG, PNG, or WEBP picture smaller than 5 MB.", "error")
         else:
-            current = now_pk().isoformat(sep=" ", timespec="seconds")
-            connection.execute("INSERT INTO attendance(employee_id,check_in,attendance_date,schedule_id) VALUES(?,?,?,?)", (session["user_id"], current, today, schedule["id"]))
+            current = current_time.isoformat(sep=" ", timespec="seconds")
+            cursor = connection.execute("INSERT INTO attendance(employee_id,check_in,attendance_date,schedule_id,late_reason) VALUES(?,?,?,?,?)", (session["user_id"], current, today, schedule["id"], late_reason if is_late else None))
+            if is_late and picture_extension:
+                LEAVE_UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+                saved_picture = f"late-{cursor.lastrowid}-{secrets.token_hex(8)}.{picture_extension}"
+                picture.save(LEAVE_UPLOAD_FOLDER / saved_picture)
+                connection.execute("UPDATE attendance SET late_picture_name=? WHERE id=?", (saved_picture, cursor.lastrowid))
             connection.commit()
             flash("Check-in recorded.", "success")
-    except sqlite3.Error:
+    except (OSError, sqlite3.Error):
         connection.rollback(); app.logger.exception("Check-in failed"); flash("Could not record check-in.", "error")
+        if saved_picture:
+            (LEAVE_UPLOAD_FOLDER / saved_picture).unlink(missing_ok=True)
     finally:
         connection.close()
     return redirect(url_for("my_attendance"))
@@ -368,7 +394,7 @@ def build_report(connection, start, end, employee_id="", department="", label=""
                 record = by_key.get((employee["id"], day_text))
                 on_leave = any(item["employee_id"] == employee["id"] and item["start_date"] <= day_text <= item["end_date"] for item in approved_leave)
                 labels = ["On Leave"] if on_leave and not record else labels_for(day_text, record["check_in"] if record else None, record["check_out"] if record else None, schedule, record["is_valid"] if record else True)
-                row = {"record_id": record["id"] if record else None, "employee_code": employee["employee_code"], "full_name": employee["full_name"], "department": employee["department"] or "", "date": day_text, "check_in": record["check_in"] if record else None, "check_out": record["check_out"] if record else None, "labels": labels}
+                row = {"record_id": record["id"] if record else None, "employee_code": employee["employee_code"], "full_name": employee["full_name"], "department": employee["department"] or "", "date": day_text, "check_in": record["check_in"] if record else None, "check_out": record["check_out"] if record else None, "late_reason": record["late_reason"] if record else None, "late_picture_name": record["late_picture_name"] if record else None, "labels": labels}
                 if not label or label in labels:
                     rows.append(row)
         day += timedelta(days=1)
@@ -378,16 +404,34 @@ def build_report(connection, start, end, employee_id="", department="", label=""
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
+    return attendance_dashboard("Admin")
+
+
+@app.route("/hr")
+@hr_required
+def hr_dashboard():
+    return attendance_dashboard("HR")
+
+
+def attendance_dashboard(title):
     connection = get_connection()
     try:
         today = today_pk().isoformat()
         rows = build_report(connection, today, today)
         counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Not Yet Checked In", "Left Early", "On Leave")}
+        in_office = connection.execute("""
+            SELECT COUNT(DISTINCT a.employee_id)
+            FROM attendance a
+            JOIN employees e ON e.id = a.employee_id
+            WHERE a.attendance_date=? AND a.is_valid=1
+              AND a.check_in IS NOT NULL AND a.check_out IS NULL
+              AND e.is_active=1
+        """, (today,)).fetchone()[0]
         total = connection.execute("SELECT COUNT(*) FROM employees WHERE is_active=1").fetchone()[0]
         pending_leave = connection.execute("SELECT COUNT(*) FROM leave_requests WHERE status='pending'").fetchone()[0]
     finally:
         connection.close()
-    return render_template("admin_dashboard.html", rows=rows, counts=counts, total=total, pending_leave=pending_leave)
+    return render_template("admin_dashboard.html", dashboard_title=title, rows=rows, counts=counts, in_office=in_office, total=total, pending_leave=pending_leave)
 
 
 @app.route("/leave", methods=["GET", "POST"])
@@ -460,6 +504,21 @@ def leave_evidence(leave_id):
     if session.get("role") != "admin" and item["employee_id"] != session["user_id"]:
         abort(403)
     return send_from_directory(LEAVE_UPLOAD_FOLDER, item["attachment_name"], as_attachment=True)
+
+
+@app.get("/attendance/<int:record_id>/late-picture")
+@login_required
+def late_check_in_picture(record_id):
+    connection = get_connection()
+    try:
+        item = connection.execute("SELECT employee_id, late_picture_name FROM attendance WHERE id=?", (record_id,)).fetchone()
+    finally:
+        connection.close()
+    if not item or not item["late_picture_name"]:
+        abort(404)
+    if session.get("role") not in {"admin", "hr"} and item["employee_id"] != session["user_id"]:
+        abort(403)
+    return send_from_directory(LEAVE_UPLOAD_FOLDER, item["late_picture_name"], as_attachment=True)
 
 
 @app.get("/admin/leaves")

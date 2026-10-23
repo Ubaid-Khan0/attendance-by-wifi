@@ -54,6 +54,7 @@ def create_tables():
         for definition in (
             "attendance_date TEXT", "schedule_id INTEGER",
             "is_valid INTEGER NOT NULL DEFAULT 1",
+            "late_reason TEXT", "late_picture_name TEXT",
         ):
             _add_column(connection, "attendance", definition)
         connection.execute("UPDATE attendance SET attendance_date = DATE(check_in) WHERE attendance_date IS NULL")

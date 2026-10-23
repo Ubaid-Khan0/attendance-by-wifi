@@ -1,1 +1,28 @@
-{% extends 'base.html' %}{% block title %}My Attendance{% endblock %}{% block content %}<header class="topbar"><div><h1>My Attendance</h1><p class="subtitle">{{ session.employee_name }} · {{ session.employee_code }}</p></div></header><section class="content-card"><div class="section-header"><div><h2>Today</h2><p>{% if schedule %}Schedule: {{ schedule.start_time }}–{{ schedule.end_time }} · {{ schedule.grace_minutes }} minute grace{% else %}Schedule not configured{% endif %}</p></div><span class="status-badge {{ 'present' if today_record else '' }}">{{ 'Checked out' if today_record and today_record.check_out else 'Checked in' if today_record else 'Not checked in' }}</span></div><div class="attendance-details"><div class="time-panel"><span>CHECK IN</span><strong>{{ today_record.check_in if today_record else 'Not recorded' }}</strong></div><div class="time-panel"><span>CHECK OUT</span><strong>{{ today_record.check_out if today_record and today_record.check_out else 'Not recorded' }}</strong></div></div><div class="attendance-buttons">{% if not today_record %}<form method="post" action="{{ url_for('check_in') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button" {% if not network_allowed or not schedule %}disabled{% endif %}>Check In</button></form><p class="subtitle">Network: {{ 'Office Wi-Fi confirmed' if network_allowed else 'Office Wi-Fi required' }}</p>{% elif not today_record.check_out %}<form method="post" action="{{ url_for('check_out') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button">Check Out</button></form>{% endif %}</div></section><section class="content-card"><div class="section-header"><h2>History</h2><form method="get" class="inline-form"><input type="date" name="start" value="{{ start }}"><input type="date" name="end" value="{{ end }}"><button class="secondary-button">Filter</button></form></div><div class="table-wrapper"><table><thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Status</th></tr></thead><tbody>{% for r in records %}<tr><td>{{ r.date }}</td><td>{{ r.check_in or '—' }}</td><td>{{ r.check_out or '—' }}</td><td>{{ r.labels|join(', ') }}</td></tr>{% else %}<tr><td colspan="4">No records in this period.</td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}My Attendance{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>My Attendance</h1><p class="subtitle">{{ session.employee_name }} · {{ session.employee_code }}</p></div></header>
+<section class="content-card">
+    <div class="section-header"><div><h2>Today</h2><p>{% if schedule %}Schedule: {{ schedule.start_time }}–{{ schedule.end_time }} · {{ schedule.grace_minutes }} minute grace{% else %}Schedule not configured{% endif %}</p></div><span class="status-badge {{ 'present' if today_record else '' }}">{{ 'Checked out' if today_record and today_record.check_out else 'Checked in' if today_record else 'Not checked in' }}</span></div>
+    <div class="attendance-details"><div class="time-panel"><span>CHECK IN</span><strong>{{ today_record.check_in if today_record else 'Not recorded' }}</strong></div><div class="time-panel"><span>CHECK OUT</span><strong>{{ today_record.check_out if today_record and today_record.check_out else 'Not recorded' }}</strong></div></div>
+    <div class="attendance-buttons">
+    {% if not today_record %}
+        <form method="post" action="{{ url_for('check_in') }}" enctype="multipart/form-data" class="employee-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% if late_check_in %}
+            <div class="form-field"><label>Reason for late check-in</label><input name="late_reason" maxlength="300" required placeholder="Why are you late?"></div>
+            <div class="form-field"><label>Picture (optional)</label><input type="file" name="late_picture" accept="image/jpeg,image/png,image/webp"></div>
+            {% endif %}
+            <button class="primary-button" {% if not network_allowed or not schedule %}disabled{% endif %}>Check In</button>
+        </form>
+        <p class="subtitle">Network: {{ 'Office Wi-Fi confirmed' if network_allowed else 'Office Wi-Fi required' }}</p>
+    {% elif not today_record.check_out %}
+        <form method="post" action="{{ url_for('check_out') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button">Check Out</button></form>
+    {% endif %}
+    </div>
+</section>
+<section class="content-card"><div class="section-header"><h2>History</h2><form method="get" class="inline-form"><input type="date" name="start" value="{{ start }}"><input type="date" name="end" value="{{ end }}"><button class="secondary-button">Filter</button></form></div><div class="table-wrapper"><table><thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Status</th><th>Late Details</th></tr></thead><tbody>
+{% for r in records %}<tr><td>{{ r.date }}</td><td>{{ r.check_in or '—' }}</td><td>{{ r.check_out or '—' }}</td><td>{{ r.labels|join(', ') }}</td><td>{{ r.late_reason or '—' }}{% if r.late_picture_name %}<small><a class="card-link" href="{{ url_for('late_check_in_picture', record_id=r.record_id) }}">View picture</a></small>{% endif %}</td></tr>
+{% else %}<tr><td colspan="5">No records in this period.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endblock %}

@@ -80,8 +80,28 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/hr/employees").status_code, 403)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
         self.assertEqual(self.login_hr().status_code, 200)
+        self.assertEqual(self.client.get("/hr").status_code, 200)
         self.assertEqual(self.client.get("/hr/employees").status_code, 200)
         self.assertEqual(self.client.get("/admin").status_code, 403)
+
+    def test_admin_and_hr_dashboards_show_in_office_count(self):
+        connection = get_connection()
+        connection.execute(
+            "INSERT INTO attendance(employee_id, check_in, attendance_date) VALUES(?, ?, ?)",
+            (2, f"{today_pk().isoformat()} 09:00:00", today_pk().isoformat()),
+        )
+        connection.commit()
+        connection.close()
+
+        admin_response = self.login(admin=True)
+        self.assertIn(b"In Office", admin_response.data)
+        self.assertIn(b">1</h2>", admin_response.data)
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+
+        hr_response = self.login_hr()
+        self.assertIn(b"HR Dashboard", hr_response.data)
+        self.assertIn(b"In Office", hr_response.data)
+        self.assertIn(b">1</h2>", hr_response.data)
 
     def test_csrf_is_required(self):
         self.assertEqual(self.client.post("/login", data={}).status_code, 400)
@@ -89,7 +109,7 @@ class AttendanceAppTests(unittest.TestCase):
     def test_check_in_is_unique_and_check_out_works(self):
         self.login()
         token = self.csrf()
-        first = self.client.post("/attendance/check-in", data={"csrf_token": token}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
+        first = self.client.post("/attendance/check-in", data={"csrf_token": token, "late_reason": "Traffic delay"}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"Check-in recorded", first.data)
         second = self.client.post("/attendance/check-in", data={"csrf_token": token}, headers={"X-Real-IP": "127.0.0.1"}, follow_redirects=True)
         self.assertIn(b"already have a check-in", second.data)
@@ -106,7 +126,7 @@ class AttendanceAppTests(unittest.TestCase):
         token = self.csrf()
         rejected = self.client.post(
             "/attendance/check-in",
-            data={"csrf_token": token},
+            data={"csrf_token": token, "late_reason": "Traffic delay"},
             headers={"X-Real-IP": "203.0.113.20"},
             follow_redirects=True,
         )
@@ -114,11 +134,40 @@ class AttendanceAppTests(unittest.TestCase):
 
         accepted = self.client.post(
             "/attendance/check-in",
-            data={"csrf_token": token},
+            data={"csrf_token": token, "late_reason": "Traffic delay"},
             headers={"X-Real-IP": "198.51.100.10"},
             follow_redirects=True,
         )
         self.assertIn(b"Check-in recorded", accepted.data)
+
+    def test_late_check_in_requires_reason_and_accepts_picture(self):
+        self.login()
+        token = self.csrf()
+        missing_reason = self.client.post(
+            "/attendance/check-in",
+            data={"csrf_token": token},
+            headers={"X-Real-IP": "127.0.0.1"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"reason for your late check-in", missing_reason.data)
+
+        response = self.client.post(
+            "/attendance/check-in",
+            data={
+                "csrf_token": token,
+                "late_reason": "Public transport delay",
+                "late_picture": (io.BytesIO(b"\x89PNG\r\n\x1a\nproof"), "proof.png"),
+            },
+            headers={"X-Real-IP": "127.0.0.1"},
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertIn(b"Check-in recorded", response.data)
+        connection = get_connection()
+        record = connection.execute("SELECT late_reason, late_picture_name FROM attendance WHERE employee_id=2").fetchone()
+        connection.close()
+        self.assertEqual(record["late_reason"], "Public transport delay")
+        self.assertTrue(record["late_picture_name"].endswith(".png"))
 
     def test_excel_export(self):
         self.login(admin=True)
