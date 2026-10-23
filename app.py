@@ -217,7 +217,7 @@ def labels_for(day, check_in, check_out, schedule, valid=True):
     if target.weekday() >= 5 or not schedule:
         return ["Present"] if check_in else ["Not scheduled"]
     if not check_in:
-        return ["Absent"] if now_pk() > datetime.combine(target, time.fromisoformat(schedule["end_time"])) else ["Not Yet Checked In"]
+        return ["Absent"]
     start_limit = datetime.combine(target, time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"])
     result = ["Late" if datetime.fromisoformat(check_in) > start_limit else "On Time"]
     if check_out and datetime.fromisoformat(check_out) < datetime.combine(target, time.fromisoformat(schedule["end_time"])):
@@ -459,7 +459,7 @@ def attendance_dashboard(title):
     try:
         today = today_pk().isoformat()
         rows = build_report(connection, today, today)
-        counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Not Yet Checked In", "Left Early", "On Leave")}
+        counts = {key: sum(key in r["labels"] for r in rows) for key in ("On Time", "Late", "Absent", "Left Early", "On Leave")}
         in_office = connection.execute("""
             SELECT COUNT(DISTINCT a.employee_id)
             FROM attendance a
@@ -795,7 +795,14 @@ def build_payroll(connection, start, end):
     payroll = []
     for employee in employees:
         attendance_rows = build_report(connection, start.isoformat(), end.isoformat(), str(employee["id"]))
-        absent_days = sum("Absent" in row["labels"] for row in attendance_rows)
+        absent_days = 0
+        for row in attendance_rows:
+            if "Absent" not in row["labels"]:
+                continue
+            schedule = current_schedule(connection, row["date"])
+            shift_finished = schedule and now_pk() > datetime.combine(date.fromisoformat(row["date"]), time.fromisoformat(schedule["end_time"]))
+            if shift_finished:
+                absent_days += 1
         leave_days = sum("On Leave" in row["labels"] for row in attendance_rows)
         late_seconds = 0
         for row in attendance_rows:

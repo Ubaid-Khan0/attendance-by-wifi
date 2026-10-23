@@ -15,7 +15,7 @@ os.environ["TRUSTED_IP_HEADER"] = "X-Real-IP"
 
 from werkzeug.security import generate_password_hash
 
-from app import app, now_pk, today_pk
+from app import app, labels_for, now_pk, today_pk
 from database import get_connection
 
 
@@ -106,6 +106,10 @@ class AttendanceAppTests(unittest.TestCase):
 
     def test_csrf_is_required(self):
         self.assertEqual(self.client.post("/login", data={}).status_code, 400)
+
+    def test_employee_starts_scheduled_day_as_absent(self):
+        schedule = {"start_time": "00:00", "end_time": "23:59", "grace_minutes": 0}
+        self.assertEqual(labels_for("2026-10-23", None, None, schedule), ["Absent"])
 
     def test_check_in_is_unique_and_check_out_works(self):
         self.login()
