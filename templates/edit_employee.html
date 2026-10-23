@@ -1,13 +1,15 @@
 {% extends 'base.html' %}
 {% block title %}Edit Employee{% endblock %}
 {% block content %}
-<header class="topbar"><div><h1>Edit Employee</h1><p class="subtitle">Employee ID cannot be changed.</p></div></header>
+<header class="topbar"><div><h1>Edit Employee</h1><p class="subtitle">Employee ID cannot be changed or reused.</p></div></header>
 <section class="content-card">
     <div class="section-header"><h2>{{ employee.full_name }}</h2></div>
     <form method="post" class="employee-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="form-field"><label>Employee ID</label><input value="{{ employee.employee_code }}" disabled></div>
         <div class="form-field"><label>Full name</label><input name="full_name" value="{{ employee.full_name }}" required></div>
+        <div class="form-field"><label>CNIC</label><input name="cnic" value="{{ employee.cnic or '' }}" inputmode="numeric" minlength="13" maxlength="15" required></div>
+        <div class="form-field"><label>Email address</label><input type="email" name="email" value="{{ employee.email or '' }}" required></div>
         <div class="form-field"><label>Department</label><input name="department" value="{{ employee.department or '' }}"></div>
         <div class="form-field"><label>Role</label><select name="role" required><option value="employee" {% if employee.role == 'employee' %}selected{% endif %}>Employee</option><option value="intern" {% if employee.role == 'intern' %}selected{% endif %}>Intern</option><option value="manager" {% if employee.role == 'manager' %}selected{% endif %}>Manager</option><option value="hr" {% if employee.role == 'hr' %}selected{% endif %}>HR</option></select></div>
         <label class="checkbox-field"><input type="checkbox" name="is_active" {% if employee.is_active %}checked{% endif %}> Active account</label>

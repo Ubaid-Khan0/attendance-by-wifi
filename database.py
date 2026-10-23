@@ -38,9 +38,11 @@ def create_tables():
             "is_active INTEGER NOT NULL DEFAULT 1",
             "must_change_password INTEGER NOT NULL DEFAULT 0",
             "failed_login_attempts INTEGER NOT NULL DEFAULT 0", "locked_until TEXT",
-            "deactivated_at TEXT",
+            "deactivated_at TEXT", "cnic TEXT", "email TEXT",
         ):
             _add_column(connection, "employees", definition)
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_cnic ON employees(cnic) WHERE cnic IS NOT NULL")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_email ON employees(LOWER(email)) WHERE email IS NOT NULL")
 
         connection.execute("""
             CREATE TABLE IF NOT EXISTS attendance (

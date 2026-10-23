@@ -229,6 +229,7 @@ class AttendanceAppTests(unittest.TestCase):
         response = self.client.post("/hr/employees/add", data={
             "csrf_token": self.csrf(), "employee_code": "MGR001",
             "full_name": "Team Manager", "department": "Operations",
+            "cnic": "3520212345671", "email": "manager@example.com",
             "role": "manager", "password": "Manager123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)
@@ -241,6 +242,7 @@ class AttendanceAppTests(unittest.TestCase):
         response = self.client.post(f"/hr/employees/{manager['id']}/edit", data={
             "csrf_token": self.csrf(), "employee_code": "CHANGED",
             "full_name": "Updated Manager", "department": "Sales",
+            "cnic": "3520212345671", "email": "manager@example.com",
             "role": "employee", "is_active": "on",
         }, follow_redirects=True)
         self.assertIn(b"Employee details updated", response.data)
@@ -255,6 +257,7 @@ class AttendanceAppTests(unittest.TestCase):
         response = self.client.post("/hr/employees/add", data={
             "csrf_token": self.csrf(), "employee_code": "INT001",
             "full_name": "Test Intern", "department": "Technology",
+            "cnic": "3520212345672", "email": "intern@example.com",
             "role": "intern", "password": "Intern123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)
@@ -262,6 +265,36 @@ class AttendanceAppTests(unittest.TestCase):
         role = connection.execute("SELECT role FROM employees WHERE employee_code='INT001'").fetchone()[0]
         connection.close()
         self.assertEqual(role, "intern")
+
+    def test_removed_employee_data_and_id_are_preserved(self):
+        self.login_hr()
+        self.client.post("/hr/employees/add", data={
+            "csrf_token": self.csrf(), "employee_code": "OLD001",
+            "full_name": "Former Employee", "department": "Sales",
+            "cnic": "3520212345674", "email": "former@example.com",
+            "role": "employee", "password": "Welcome123",
+        })
+        connection = get_connection()
+        employee_id = connection.execute("SELECT id FROM employees WHERE employee_code='OLD001'").fetchone()[0]
+        connection.close()
+
+        response = self.client.post(f"/hr/employees/{employee_id}/toggle", data={
+            "csrf_token": self.csrf(), "admin_password": "Human123",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee removed", response.data)
+        connection = get_connection()
+        removed = connection.execute("SELECT * FROM employees WHERE id=?", (employee_id,)).fetchone()
+        connection.close()
+        self.assertEqual((removed["employee_code"], removed["full_name"], removed["cnic"], removed["email"], removed["is_active"]),
+                         ("OLD001", "Former Employee", "3520212345674", "former@example.com", 0))
+
+        response = self.client.post("/hr/employees/add", data={
+            "csrf_token": self.csrf(), "employee_code": "OLD001",
+            "full_name": "Different Person", "department": "Finance",
+            "cnic": "3520212345675", "email": "different@example.com",
+            "role": "employee", "password": "Welcome123",
+        }, follow_redirects=True)
+        self.assertIn(b"including in removed employee records", response.data)
 
     def test_admin_can_create_first_hr_only(self):
         connection = get_connection()
@@ -274,6 +307,7 @@ class AttendanceAppTests(unittest.TestCase):
         response = self.client.post("/hr/employees/add", data={
             "csrf_token": self.csrf(), "employee_code": "HR002",
             "full_name": "First HR", "department": "Human Resources",
+            "cnic": "3520212345673", "email": "hr2@example.com",
             "role": "employee", "password": "Welcome123",
         }, follow_redirects=True)
         self.assertIn(b"Employee added", response.data)

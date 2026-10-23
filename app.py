@@ -2,6 +2,7 @@ import csv
 import io
 import ipaddress
 import os
+import re
 import secrets
 import sqlite3
 from datetime import date, datetime, time, timedelta
@@ -66,6 +67,16 @@ def today_pk():
 
 def valid_password(value):
     return len(value) >= 8 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+def employee_contact_details(form):
+    cnic = re.sub(r"\D", "", form.get("cnic", ""))
+    email = form.get("email", "").strip().lower()
+    return cnic, email
+
+
+def valid_employee_contact(cnic, email):
+    return len(cnic) == 13 and cnic.isdigit() and re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)
 
 
 def selected_reason(form, field, choices):
@@ -601,6 +612,7 @@ def employees():
 @employee_management_required
 def add_employee():
     code, name, department, password, role = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password", "role"))
+    cnic, email = employee_contact_details(request.form)
     bootstrap_hr = session.get("role") == "admin"
     if bootstrap_hr:
         role = "hr"
@@ -608,13 +620,15 @@ def add_employee():
         flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
     if not code or not name or not valid_password(password):
         flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
+    if not valid_employee_contact(cnic, email):
+        flash("Enter a valid 13-digit CNIC and email address.", "error"); return redirect(url_for("employees"))
     connection = get_connection()
     try:
-        connection.execute("INSERT INTO employees(employee_code,full_name,department,password_hash,must_change_password,role) VALUES(?,?,?,?,1,?)", (code, name, department or None, generate_password_hash(password), role))
+        connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,password_hash,must_change_password,role) VALUES(?,?,?,?,?,?,1,?)", (code, name, department or None, cnic, email, generate_password_hash(password), role))
         connection.commit(); flash("Employee added.", "success")
         if bootstrap_hr:
             return redirect(url_for("admin_dashboard"))
-    except sqlite3.IntegrityError: flash("That employee code already exists.", "error")
+    except sqlite3.IntegrityError: flash("That employee ID, CNIC, or email already exists, including in removed employee records.", "error")
     finally: connection.close()
     return redirect(url_for("employees"))
 
@@ -635,21 +649,29 @@ def edit_employee(employee_id):
         if request.method == "POST":
             name = request.form.get("full_name", "").strip()
             department = request.form.get("department", "").strip()
+            cnic, email = employee_contact_details(request.form)
             role = request.form.get("role", "").strip()
             active = 1 if request.form.get("is_active") else 0
             if not name:
                 flash("Full name is required.", "error")
+            elif not valid_employee_contact(cnic, email):
+                flash("Enter a valid 13-digit CNIC and email address.", "error")
             elif role not in {"employee", "intern", "manager", "hr"}:
                 flash("Select a valid employee role.", "error")
             elif employee_id == session["user_id"] and (role != "hr" or not active):
                 flash("You cannot remove your own HR access or deactivate your account.", "error")
             else:
                 deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
-                connection.execute("""
-                    UPDATE employees SET full_name=?, department=?, role=?, is_active=?, deactivated_at=?
-                    WHERE id=?
-                """, (name, department or None, role, active, deactivated, employee_id))
-                connection.commit()
+                try:
+                    connection.execute("""
+                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, role=?, is_active=?, deactivated_at=?
+                        WHERE id=?
+                    """, (name, department or None, cnic, email, role, active, deactivated, employee_id))
+                    connection.commit()
+                except sqlite3.IntegrityError:
+                    connection.rollback()
+                    flash("That CNIC or email already belongs to another employee.", "error")
+                    return render_template("edit_employee.html", employee=employee)
                 if employee_id == session["user_id"]:
                     session["employee_name"] = name
                 flash("Employee details updated.", "success")
@@ -671,7 +693,8 @@ def toggle_employee(employee_id):
             if not employee: abort(404)
             active = 0 if employee["is_active"] else 1
             deactivated = now_pk().isoformat(sep=" ", timespec="seconds") if not active else None
-            connection.execute("UPDATE employees SET is_active=?, deactivated_at=? WHERE id=?", (active, deactivated, employee_id)); connection.commit(); flash("Employee status updated.", "success")
+            connection.execute("UPDATE employees SET is_active=?, deactivated_at=? WHERE id=?", (active, deactivated, employee_id)); connection.commit()
+            flash("Employee restored." if active else "Employee removed. Their ID and records have been permanently reserved.", "success")
     finally: connection.close()
     return redirect(url_for("employees"))
 
