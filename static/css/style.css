@@ -241,8 +241,8 @@ select {
 }
 
 .brand-logo {
-    width: 46px;
-    height: 46px;
+    width: 190px;
+    height: auto;
     flex-shrink: 0;
 }
 
@@ -1176,6 +1176,9 @@ td { border-top-color: var(--border); color: #dce5f2; }
 .status-badge.rejected { background: #3b1720; color: #fda4af; }
 .auth-page { background: radial-gradient(circle at 20% 15%, rgba(34,211,238,.16), transparent 25rem), radial-gradient(circle at 85% 85%, rgba(124,58,237,.18), transparent 28rem), #070b14; }
 .auth-brand { border-bottom-color: var(--border); }
+.sidebar .brand { justify-content: center; }
+.auth-brand { align-items: flex-start; flex-direction: column; gap: 14px; }
+.auth-brand .brand-logo { width: 260px; max-width: 100%; }
 
 .auth-shell {
     display: grid;
