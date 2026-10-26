@@ -76,6 +76,7 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/leave/history").status_code, 403)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
         self.assertEqual(self.login(admin=True).status_code, 200)
+        self.assertNotIn(b">My Attendance</a>", self.client.get("/admin").data)
         for path in ("/admin", "/hr", "/admin/settings", "/admin/reports", "/attendance", "/leave/history"):
             self.assertEqual(self.client.get(path).status_code, 200, path)
         self.assertEqual(self.client.get("/hr/employees").status_code, 200)
