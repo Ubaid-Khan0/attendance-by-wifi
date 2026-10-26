@@ -211,9 +211,13 @@ select {
 
 .sidebar {
     width: 255px;
+    height: 100vh;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    position: sticky;
+    top: 0;
+    overflow-y: auto;
     padding: 27px 17px 20px;
     background: var(--navy);
     color: white;
@@ -1064,6 +1068,9 @@ details summary {
 
     .sidebar {
         width: 100%;
+        height: auto;
+        position: static;
+        overflow-y: visible;
         padding: 18px;
     }
 
