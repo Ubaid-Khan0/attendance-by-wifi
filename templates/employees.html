@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Employees{% endblock %}
 {% block content %}
-<header class="topbar"><div><h1>{{ 'Create First HR' if bootstrap_hr else 'Employees' }}</h1><p class="subtitle">{{ 'Create the first HR account. Employee management becomes HR-only afterward.' if bootstrap_hr else 'Add employees, assign roles, and maintain permanent staff records.' }}</p></div></header>
+<header class="topbar"><div><h1>{{ 'Create First HR' if bootstrap_hr else 'Employees' }}</h1><p class="subtitle">{{ 'Create the first HR account.' if bootstrap_hr else 'Add employees, assign roles, and maintain permanent staff records.' }}</p></div></header>
 <section class="content-card">
     <div class="section-header"><h2>Add Employee</h2></div>
     <form method="post" action="{{ url_for('add_employee') }}" class="employee-form">

@@ -172,17 +172,9 @@ def employee_management_required(view):
     @wraps(view)
     @login_required
     def wrapped(*args, **kwargs):
-        if session.get("role") == "hr":
-            return view(*args, **kwargs)
-        if session.get("role") == "admin":
-            connection = get_connection()
-            try:
-                hr_exists = connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone()
-            finally:
-                connection.close()
-            if not hr_exists:
-                return view(*args, **kwargs)
-        abort(403)
+        if session.get("role") not in {"admin", "hr"}:
+            abort(403)
+        return view(*args, **kwargs)
     return wrapped
 
 
@@ -642,9 +634,11 @@ def review_leave(leave_id):
 @employee_management_required
 def employees():
     connection = get_connection()
-    try: people = connection.execute("SELECT * FROM employees WHERE role!='admin' ORDER BY id DESC").fetchall()
+    try:
+        people = connection.execute("SELECT * FROM employees WHERE role!='admin' ORDER BY id DESC").fetchall()
+        bootstrap_hr = session.get("role") == "admin" and connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone() is None
     finally: connection.close()
-    return render_template("employees.html", employees=people, bootstrap_hr=session.get("role") == "admin")
+    return render_template("employees.html", employees=people, bootstrap_hr=bootstrap_hr)
 
 
 @app.post("/hr/employees/add")
@@ -658,7 +652,11 @@ def add_employee():
         monthly_salary = float(request.form.get("monthly_salary", ""))
     except ValueError:
         monthly_salary = 0
-    bootstrap_hr = session.get("role") == "admin"
+    connection = get_connection()
+    try:
+        bootstrap_hr = session.get("role") == "admin" and connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone() is None
+    finally:
+        connection.close()
     if bootstrap_hr:
         role = "hr"
     if role not in {"employee", "intern", "manager", "hr"}:
@@ -687,7 +685,7 @@ def verify_admin_password(connection):
 
 
 @app.route("/hr/employees/<int:employee_id>/edit", methods=["GET", "POST"])
-@hr_required
+@employee_management_required
 def edit_employee(employee_id):
     connection = get_connection()
     try:
@@ -714,7 +712,7 @@ def edit_employee(employee_id):
                 flash("Enter a valid monthly salary, bank name, and account number.", "error")
             elif role not in {"employee", "intern", "manager", "hr"}:
                 flash("Select a valid employee role.", "error")
-            elif employee_id == session["user_id"] and (role != "hr" or not active):
+            elif session.get("role") == "hr" and employee_id == session["user_id"] and (role != "hr" or not active):
                 flash("You cannot remove your own HR access or deactivate your account.", "error")
             else:
                 deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
@@ -740,7 +738,7 @@ def edit_employee(employee_id):
 
 
 @app.post("/hr/employees/<int:employee_id>/toggle")
-@hr_required
+@employee_management_required
 def toggle_employee(employee_id):
     connection = get_connection()
     try:
@@ -758,7 +756,7 @@ def toggle_employee(employee_id):
 
 
 @app.post("/hr/employees/<int:employee_id>/reset-password")
-@hr_required
+@employee_management_required
 def reset_password(employee_id):
     password = request.form.get("password", "")
     connection = get_connection()

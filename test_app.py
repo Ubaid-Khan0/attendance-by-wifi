@@ -78,12 +78,27 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(self.login(admin=True).status_code, 200)
         for path in ("/admin", "/admin/settings", "/admin/reports", "/attendance", "/leave/history"):
             self.assertEqual(self.client.get(path).status_code, 200, path)
-        self.assertEqual(self.client.get("/hr/employees").status_code, 403)
+        self.assertEqual(self.client.get("/hr/employees").status_code, 200)
         self.client.post("/logout", data={"csrf_token": self.csrf()})
         self.assertEqual(self.login_hr().status_code, 200)
         self.assertEqual(self.client.get("/hr").status_code, 200)
         self.assertEqual(self.client.get("/hr/employees").status_code, 200)
         self.assertEqual(self.client.get("/admin").status_code, 403)
+
+    def test_admin_can_edit_employee_job_status(self):
+        self.login(admin=True)
+        response = self.client.post("/hr/employees/2/edit", data={
+            "csrf_token": self.csrf(), "full_name": "Regular Employee",
+            "department": "Operations", "cnic": "3520212345670",
+            "email": "employee@example.com", "monthly_salary": "60000",
+            "bank_name": "Test Bank", "account_number": "PKEMP001",
+            "role": "manager",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee details updated", response.data)
+        connection = get_connection()
+        employee = connection.execute("SELECT role, is_active FROM employees WHERE id=2").fetchone()
+        connection.close()
+        self.assertEqual((employee["role"], employee["is_active"]), ("manager", 0))
 
     def test_admin_and_hr_dashboards_show_in_office_count(self):
         connection = get_connection()
