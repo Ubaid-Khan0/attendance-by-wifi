@@ -305,6 +305,25 @@ class AttendanceAppTests(unittest.TestCase):
         connection.close()
         self.assertEqual(role, "intern")
 
+    def test_unpaid_intern_does_not_require_payroll_details(self):
+        self.login_hr()
+        response = self.client.post("/hr/employees/add", data={
+            "csrf_token": self.csrf(), "employee_code": "UNPAID01",
+            "full_name": "Unpaid Intern", "department": "Technology",
+            "cnic": "3520212345688", "email": "unpaid@example.com",
+            "role": "intern", "payment_status": "unpaid", "password": "Intern123",
+        }, follow_redirects=True)
+        self.assertIn(b"Employee added", response.data)
+        connection = get_connection()
+        intern = connection.execute("SELECT is_paid, monthly_salary, bank_name, account_number FROM employees WHERE employee_code='UNPAID01'").fetchone()
+        payroll_employee = connection.execute("SELECT 1 FROM salary_history WHERE employee_id=(SELECT id FROM employees WHERE employee_code='UNPAID01')").fetchone()
+        connection.close()
+        self.assertEqual(intern["is_paid"], 0)
+        self.assertIsNone(intern["monthly_salary"])
+        self.assertIsNone(intern["bank_name"])
+        self.assertIsNone(intern["account_number"])
+        self.assertIsNone(payroll_employee)
+
     def test_removed_employee_data_and_id_are_preserved(self):
         self.login_hr()
         self.client.post("/hr/employees/add", data={

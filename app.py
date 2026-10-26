@@ -646,12 +646,6 @@ def employees():
 def add_employee():
     code, name, department, password, role = (request.form.get(k, "").strip() for k in ("employee_code", "full_name", "department", "password", "role"))
     cnic, email = employee_contact_details(request.form)
-    bank_name = request.form.get("bank_name", "").strip()
-    account_number = request.form.get("account_number", "").strip()
-    try:
-        monthly_salary = float(request.form.get("monthly_salary", ""))
-    except ValueError:
-        monthly_salary = 0
     connection = get_connection()
     try:
         bootstrap_hr = session.get("role") == "admin" and connection.execute("SELECT 1 FROM employees WHERE role='hr' LIMIT 1").fetchone() is None
@@ -661,16 +655,24 @@ def add_employee():
         role = "hr"
     if role not in {"employee", "intern", "manager", "hr"}:
         flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
+    is_paid = role != "intern" or request.form.get("payment_status") != "unpaid"
+    bank_name = request.form.get("bank_name", "").strip() if is_paid else None
+    account_number = request.form.get("account_number", "").strip() if is_paid else None
+    try:
+        monthly_salary = float(request.form.get("monthly_salary", "")) if is_paid else None
+    except ValueError:
+        monthly_salary = 0
     if not code or not name or not valid_password(password):
         flash("Code, name, and a valid password are required.", "error"); return redirect(url_for("employees"))
     if not valid_employee_contact(cnic, email):
         flash("Enter a valid 13-digit CNIC and email address.", "error"); return redirect(url_for("employees"))
-    if not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number:
+    if is_paid and (not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number):
         flash("Enter a valid monthly salary, bank name, and account number.", "error"); return redirect(url_for("employees"))
     connection = get_connection()
     try:
-        cursor = connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,monthly_salary,bank_name,account_number,password_hash,must_change_password,role) VALUES(?,?,?,?,?,?,?,?,?,1,?)", (code, name, department or None, cnic, email, monthly_salary, bank_name, account_number, generate_password_hash(password), role))
-        connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (cursor.lastrowid, monthly_salary, session["user_id"]))
+        cursor = connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,monthly_salary,bank_name,account_number,password_hash,must_change_password,role,is_paid) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)", (code, name, department or None, cnic, email, monthly_salary, bank_name, account_number, generate_password_hash(password), role, int(is_paid)))
+        if is_paid:
+            connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (cursor.lastrowid, monthly_salary, session["user_id"]))
         connection.commit(); flash("Employee added.", "success")
         if bootstrap_hr:
             return redirect(url_for("admin_dashboard"))
@@ -696,19 +698,20 @@ def edit_employee(employee_id):
             name = request.form.get("full_name", "").strip()
             department = request.form.get("department", "").strip()
             cnic, email = employee_contact_details(request.form)
-            bank_name = request.form.get("bank_name", "").strip()
-            account_number = request.form.get("account_number", "").strip()
+            role = request.form.get("role", "").strip()
+            is_paid = role != "intern" or request.form.get("payment_status") != "unpaid"
+            bank_name = request.form.get("bank_name", "").strip() if is_paid else None
+            account_number = request.form.get("account_number", "").strip() if is_paid else None
             try:
-                monthly_salary = float(request.form.get("monthly_salary", ""))
+                monthly_salary = float(request.form.get("monthly_salary", "")) if is_paid else None
             except ValueError:
                 monthly_salary = 0
-            role = request.form.get("role", "").strip()
             active = 1 if request.form.get("is_active") else 0
             if not name:
                 flash("Full name is required.", "error")
             elif not valid_employee_contact(cnic, email):
                 flash("Enter a valid 13-digit CNIC and email address.", "error")
-            elif not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number:
+            elif is_paid and (not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number):
                 flash("Enter a valid monthly salary, bank name, and account number.", "error")
             elif role not in {"employee", "intern", "manager", "hr"}:
                 flash("Select a valid employee role.", "error")
@@ -718,10 +721,10 @@ def edit_employee(employee_id):
                 deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
                 try:
                     connection.execute("""
-                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, monthly_salary=?, bank_name=?, account_number=?, role=?, is_active=?, deactivated_at=?
+                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, monthly_salary=?, bank_name=?, account_number=?, role=?, is_paid=?, is_active=?, deactivated_at=?
                         WHERE id=?
-                    """, (name, department or None, cnic, email, monthly_salary, bank_name, account_number, role, active, deactivated, employee_id))
-                    if employee["monthly_salary"] is None or float(employee["monthly_salary"]) != monthly_salary:
+                    """, (name, department or None, cnic, email, monthly_salary, bank_name, account_number, role, int(is_paid), active, deactivated, employee_id))
+                    if is_paid and (employee["monthly_salary"] is None or float(employee["monthly_salary"]) != monthly_salary):
                         connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (employee_id, monthly_salary, session["user_id"]))
                     connection.commit()
                 except sqlite3.IntegrityError:

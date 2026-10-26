@@ -40,6 +40,7 @@ def create_tables():
             "failed_login_attempts INTEGER NOT NULL DEFAULT 0", "locked_until TEXT",
             "deactivated_at TEXT", "cnic TEXT", "email TEXT",
             "monthly_salary REAL", "bank_name TEXT", "account_number TEXT",
+            "is_paid INTEGER NOT NULL DEFAULT 1",
         ):
             _add_column(connection, "employees", definition)
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_cnic ON employees(cnic) WHERE cnic IS NOT NULL")
