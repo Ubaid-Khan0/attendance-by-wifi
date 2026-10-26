@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}My Profile{% endblock %}
+{% block content %}
+<header class="topbar">
+    <div><h1>My Profile</h1><p class="subtitle">Your personal and employment information.</p></div>
+</header>
+<section class="content-card profile-card">
+    <div class="profile-heading">
+        <div class="profile-avatar">{{ employee.full_name[:1]|upper }}</div>
+        <div>
+            <h2>{{ employee.full_name }}</h2>
+            <p>{{ employee.employee_code }} · {{ employee.role|title }}</p>
+        </div>
+        <span class="status-badge {{ 'present' if employee.is_active else 'rejected' }}">{{ 'Active' if employee.is_active else 'Inactive' }}</span>
+    </div>
+    <div class="profile-details">
+        <div class="profile-field"><span>Full name</span><strong>{{ employee.full_name }}</strong></div>
+        <div class="profile-field"><span>Employee ID</span><strong>{{ employee.employee_code }}</strong></div>
+        <div class="profile-field"><span>CNIC</span><strong>{{ employee.cnic or 'Not provided' }}</strong></div>
+        <div class="profile-field"><span>Email address</span><strong>{{ employee.email or 'Not provided' }}</strong></div>
+        <div class="profile-field"><span>Department</span><strong>{{ employee.department or 'Not assigned' }}</strong></div>
+        <div class="profile-field"><span>Role</span><strong>{{ employee.role|title }}</strong></div>
+        <div class="profile-field"><span>Monthly salary</span><strong>{% if employee.monthly_salary is not none %}PKR {{ '{:,.2f}'.format(employee.monthly_salary) }}{% else %}Not provided{% endif %}</strong></div>
+        <div class="profile-field"><span>Bank name</span><strong>{{ employee.bank_name or 'Not provided' }}</strong></div>
+        <div class="profile-field"><span>Account number / IBAN</span><strong>{{ employee.account_number or 'Not provided' }}</strong></div>
+        {% if employee.role == 'intern' %}<div class="profile-field"><span>Intern payment status</span><strong>{{ 'Paid' if employee.is_paid else 'Unpaid' }}</strong></div>{% endif %}
+    </div>
+    <p class="profile-help">Contact HR if any information needs to be updated.</p>
+</section>
+{% endblock %}

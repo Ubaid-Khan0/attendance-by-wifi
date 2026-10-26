@@ -86,6 +86,24 @@ class AttendanceAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/hr/employees").status_code, 200)
         self.assertEqual(self.client.get("/admin").status_code, 403)
 
+    def test_employee_and_hr_can_view_only_their_own_profile(self):
+        self.assertEqual(self.client.get("/profile").status_code, 302)
+
+        self.login()
+        response = self.client.get("/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Test Employee", response.data)
+        self.assertIn(b"EMP001", response.data)
+        self.assertNotIn(b"HR User", response.data)
+
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.login_hr()
+        response = self.client.get("/profile")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"HR User", response.data)
+        self.assertIn(b"HR001", response.data)
+        self.assertNotIn(b"Test Employee", response.data)
+
     def test_admin_can_edit_employee_job_status(self):
         self.login(admin=True)
         response = self.client.post("/hr/employees/2/edit", data={

@@ -190,6 +190,23 @@ def employee_management_navigation():
     return {"needs_first_hr": needs_first_hr}
 
 
+@app.get("/profile")
+@login_required
+def employee_profile():
+    connection = get_connection()
+    try:
+        employee = connection.execute(
+            "SELECT * FROM employees WHERE id=?", (session["user_id"],)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not employee:
+        session.clear()
+        flash("Your employee record could not be found. Please log in again.", "error")
+        return redirect(url_for("employee_login"))
+    return render_template("profile.html", employee=employee)
+
+
 def current_schedule(connection, day=None):
     day = day or today_pk().isoformat()
     return connection.execute("""
