@@ -152,7 +152,7 @@ def hr_required(view):
     @wraps(view)
     @login_required
     def wrapped(*args, **kwargs):
-        if session.get("role") != "hr":
+        if session.get("role") not in {"admin", "hr"}:
             abort(403)
         return view(*args, **kwargs)
     return wrapped
