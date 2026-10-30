@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}Salary Adjustments{% endblock %}
+{% block content %}
+<header class="topbar"><div><h1>Salary Adjustments</h1><p class="subtitle">Add a commission or deduction for a selected payroll month.</p></div></header>
+<section class="content-card"><form method="post" class="employee-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="form-field"><label>Employee</label><select name="employee_id" required><option value="">Select employee</option>{% for person in people %}<option value="{{ person.id }}">{{ person.full_name }} · {{ person.employee_code }}</option>{% endfor %}</select></div>
+<div class="form-field"><label>Payroll month</label><input type="month" name="payroll_month" value="{{ month }}" required></div>
+<div class="form-field"><label>Type</label><select name="adjustment_type" required><option value="commission">Commission</option><option value="deduction">Deduction</option></select></div>
+<div class="form-field"><label>Amount</label><input type="number" name="amount" min="0.01" step="0.01" required></div>
+<div class="form-field"><label>Reason</label><input name="reason" maxlength="300" required></div>
+<button class="primary-button">Add Adjustment</button></form></section>
+<section class="content-card"><div class="section-header"><h2>{{ month }} Adjustments</h2><form method="get" class="inline-form"><input type="month" name="month" value="{{ month }}" required><button class="secondary-button">View</button></form></div><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Type</th><th>Amount</th><th>Reason</th><th>Added By</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.full_name }}<small>{{ row.employee_code }}</small></td><td>{{ row.adjustment_type|title }}</td><td>{{ '%.2f'|format(row.amount) }}</td><td>{{ row.reason }}</td><td>{{ row.created_by_name }}</td></tr>{% else %}<tr><td colspan="5">No salary adjustments for this month.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

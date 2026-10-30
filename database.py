@@ -156,6 +156,18 @@ def create_tables():
             reviewed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(employee_id) REFERENCES employees(id),
             FOREIGN KEY(reviewed_by) REFERENCES employees(id))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS salary_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            payroll_month TEXT NOT NULL,
+            adjustment_type TEXT NOT NULL CHECK (adjustment_type IN ('commission', 'deduction')),
+            amount REAL NOT NULL CHECK (amount > 0),
+            reason TEXT NOT NULL,
+            created_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(employee_id) REFERENCES employees(id),
+            FOREIGN KEY(created_by) REFERENCES employees(id))""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_salary_adjustments_employee_month ON salary_adjustments(employee_id, payroll_month)")
         connection.commit()
     finally:
         connection.close()

@@ -28,7 +28,7 @@ class AttendanceAppTests(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
         connection = get_connection()
-        for table in ("remote_requests", "teams", "attendance_audit", "leave_requests", "attendance", "salary_history", "holidays", "work_schedules", "employees"):
+        for table in ("salary_adjustments", "remote_requests", "teams", "attendance_audit", "leave_requests", "attendance", "salary_history", "holidays", "work_schedules", "employees"):
             if table == "employees":
                 connection.execute("UPDATE settings SET updated_by=NULL")
             connection.execute(f"DELETE FROM {table}")
@@ -413,11 +413,61 @@ class AttendanceAppTests(unittest.TestCase):
         export = self.client.get(f"/payroll/export?month={today_pk().strftime('%Y-%m')}")
         self.assertEqual(export.status_code, 200)
         self.assertEqual(export.data[:2], b"PK")
+        from openpyxl import load_workbook
+        workbook = load_workbook(io.BytesIO(export.data), read_only=True)
+        self.assertEqual(workbook.sheetnames, ["Bank Alfalah", "Other Banks"])
+        for sheet in workbook.worksheets:
+            self.assertEqual(
+                list(next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))),
+                ["Employee Name", "Employee Code", "Account Number", "Bank Name", "Total Salary"],
+            )
+            self.assertEqual(sheet.max_column, 5)
         export.close()
         self.client.post("/logout", data={"csrf_token": self.csrf()})
 
         response = self.login_hr()
         self.assertIn(b"Payroll", self.client.get("/payroll").data)
+
+    def test_hr_adds_monthly_commission_and_deduction(self):
+        connection = get_connection()
+        connection.execute("UPDATE employees SET monthly_salary=60000,bank_name='Bank Alfalah',account_number='PKEMP001' WHERE id=2")
+        connection.commit(); connection.close()
+        self.login_hr()
+        month = today_pk().strftime("%Y-%m")
+        for adjustment_type, amount in (("commission", "5000"), ("deduction", "1000")):
+            response = self.client.post("/payroll/adjustments", data={
+                "csrf_token": self.csrf(), "employee_id": "2", "payroll_month": month,
+                "adjustment_type": adjustment_type, "amount": amount, "reason": "Monthly adjustment",
+            }, follow_redirects=True)
+            self.assertIn(b"Salary adjustment added", response.data)
+        connection = get_connection()
+        rows = connection.execute("SELECT adjustment_type,amount FROM salary_adjustments WHERE employee_id=2 ORDER BY id").fetchall()
+        connection.close()
+        self.assertEqual([(row["adjustment_type"], row["amount"]) for row in rows], [("commission", 5000), ("deduction", 1000)])
+
+    def test_manager_and_team_lead_adjust_only_their_team(self):
+        connection = get_connection()
+        connection.execute("UPDATE employees SET role='manager' WHERE id=2")
+        connection.execute("UPDATE employees SET role='team_lead' WHERE id=3")
+        connection.execute("""INSERT INTO employees(id,employee_code,full_name,password_hash,role)
+            VALUES(4,'EMP004','Team Member',?,'employee')""", (generate_password_hash("Member123"),))
+        team_id = connection.execute("INSERT INTO teams(name,manager_id,lead_id) VALUES('Delivery',2,3)").lastrowid
+        connection.execute("UPDATE employees SET team_id=? WHERE id=4", (team_id,))
+        connection.commit(); connection.close()
+        month = today_pk().strftime("%Y-%m")
+        payload = {"employee_id": "4", "payroll_month": month,
+                   "adjustment_type": "commission", "amount": "500", "reason": "Team performance"}
+        self.login()
+        payload["csrf_token"] = self.csrf()
+        self.assertIn(b"Salary adjustment added", self.client.post("/payroll/adjustments", data=payload, follow_redirects=True).data)
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.login_hr()
+        payload["csrf_token"] = self.csrf()
+        self.assertIn(b"Salary adjustment added", self.client.post("/payroll/adjustments", data=payload, follow_redirects=True).data)
+        connection = get_connection()
+        count = connection.execute("SELECT COUNT(*) FROM salary_adjustments WHERE employee_id=4").fetchone()[0]
+        connection.close()
+        self.assertEqual(count, 2)
 
     def test_admin_can_create_first_hr_only(self):
         connection = get_connection()

@@ -168,6 +168,16 @@ def payroll_required(view):
     return wrapped
 
 
+def salary_adjustment_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if session.get("role") not in {"hr", "manager", "team_lead"}:
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def employee_management_required(view):
     @wraps(view)
     @login_required
@@ -968,6 +978,7 @@ def build_payroll(connection, start, end):
         ORDER BY full_name
     """, (end.isoformat(), start.isoformat())).fetchall()
     payroll = []
+    payroll_month = start.strftime("%Y-%m")
     for employee in employees:
         attendance_rows = build_report(connection, start.isoformat(), end.isoformat(), str(employee["id"]))
         absent_days = 0
@@ -991,6 +1002,13 @@ def build_payroll(connection, start, end):
         absent_deduction = absent_days * rates["absent_deduction_per_day"]
         leave_deduction = leave_days * rates["leave_deduction_per_day"]
         total_deduction = late_deduction + absent_deduction + leave_deduction
+        adjustment_rows = connection.execute("""SELECT adjustment_type, COALESCE(SUM(amount), 0) AS total
+            FROM salary_adjustments WHERE employee_id=? AND payroll_month=? GROUP BY adjustment_type""",
+            (employee["id"], payroll_month)).fetchall()
+        adjustments = {row["adjustment_type"]: float(row["total"]) for row in adjustment_rows}
+        commission = adjustments.get("commission", 0)
+        manual_deduction = adjustments.get("deduction", 0)
+        total_deduction += manual_deduction
         salary_history = connection.execute("SELECT monthly_salary FROM salary_history WHERE employee_id=? ORDER BY effective_at DESC,id DESC LIMIT 2", (employee["id"],)).fetchall()
         previous_salary = salary_history[1]["monthly_salary"] if len(salary_history) > 1 else None
         payroll.append({
@@ -1000,9 +1018,59 @@ def build_payroll(connection, start, end):
             "previous_salary": previous_salary, "late_seconds": late_seconds, "absent_days": absent_days,
             "leave_days": leave_days, "late_deduction": late_deduction,
             "absent_deduction": absent_deduction, "leave_deduction": leave_deduction,
-            "total_deduction": total_deduction, "net_salary": max(0, float(employee["monthly_salary"]) - total_deduction),
+            "commission": commission, "manual_deduction": manual_deduction,
+            "total_deduction": total_deduction,
+            "net_salary": max(0, float(employee["monthly_salary"]) + commission - total_deduction),
         })
     return payroll, rates
+
+
+def adjustment_people(connection):
+    role = session.get("role")
+    if role == "hr":
+        return connection.execute("""SELECT id, full_name, employee_code FROM employees
+            WHERE role!='admin' AND is_active=1 ORDER BY full_name""").fetchall()
+    ownership = "t.manager_id" if role == "manager" else "t.lead_id"
+    return connection.execute(f"""SELECT e.id, e.full_name, e.employee_code FROM employees e
+        JOIN teams t ON t.id=e.team_id WHERE {ownership}=? AND e.id!=? AND e.is_active=1
+        ORDER BY e.full_name""", (session["user_id"], session["user_id"])).fetchall()
+
+
+@app.route("/payroll/adjustments", methods=["GET", "POST"])
+@salary_adjustment_required
+def payroll_adjustments():
+    connection = get_connection()
+    try:
+        people = adjustment_people(connection)
+        allowed_ids = {person["id"] for person in people}
+        if request.method == "POST":
+            try:
+                employee_id = int(request.form.get("employee_id", ""))
+                month = datetime.strptime(request.form.get("payroll_month", ""), "%Y-%m").strftime("%Y-%m")
+                adjustment_type = request.form.get("adjustment_type", "")
+                amount = float(request.form.get("amount", ""))
+                reason = request.form.get("reason", "").strip()
+                if employee_id not in allowed_ids or adjustment_type not in {"commission", "deduction"} or not math.isfinite(amount) or amount <= 0 or not reason:
+                    raise ValueError
+            except (TypeError, ValueError):
+                flash("Select an employee and enter a valid month, amount, type, and reason.", "error")
+            else:
+                connection.execute("""INSERT INTO salary_adjustments
+                    (employee_id,payroll_month,adjustment_type,amount,reason,created_by)
+                    VALUES(?,?,?,?,?,?)""", (employee_id, month, adjustment_type, amount, reason, session["user_id"]))
+                connection.commit()
+                flash("Salary adjustment added.", "success")
+                return redirect(url_for("payroll_adjustments", month=month))
+        selected_month = payroll_period(request.values.get("month"))[0].strftime("%Y-%m")
+        rows = connection.execute("""SELECT a.*, e.full_name, e.employee_code, c.full_name AS created_by_name
+            FROM salary_adjustments a JOIN employees e ON e.id=a.employee_id
+            JOIN employees c ON c.id=a.created_by WHERE a.payroll_month=?
+            ORDER BY a.created_at DESC, a.id DESC""", (selected_month,)).fetchall()
+        if session.get("role") != "hr":
+            rows = [row for row in rows if row["employee_id"] in allowed_ids]
+    finally:
+        connection.close()
+    return render_template("payroll_adjustments.html", people=people, rows=rows, month=selected_month)
 
 
 @app.route("/payroll", methods=["GET", "POST"])
@@ -1043,20 +1111,27 @@ def export_payroll():
         from openpyxl.utils import get_column_letter
     except ImportError:
         abort(500, "Excel export requires openpyxl.")
-    book = Workbook(); sheet = book.active; sheet.title = "Payroll"
-    headers = ["Employee ID", "Name", "Department", "Bank", "Account Number", "Current Salary", "Previous Salary", "Late Seconds", "Absent Days", "Leave Days", "Late Deduction", "Absent Deduction", "Leave Deduction", "Total Deduction", "Net Salary"]
-    sheet.append([f"Payroll for {start.strftime('%B %Y')}"]); sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-    sheet.append(headers)
-    for row in rows:
-        sheet.append([row["employee_code"], row["full_name"], row["department"], row["bank_name"], row["account_number"], row["salary"], row["previous_salary"], row["late_seconds"], row["absent_days"], row["leave_days"], row["late_deduction"], row["absent_deduction"], row["leave_deduction"], row["total_deduction"], row["net_salary"]])
-    sheet["A1"].font = Font(size=14, bold=True, color="FFFFFF")
-    for cell in sheet[1]: cell.fill = PatternFill("solid", fgColor="1E3A5F")
-    for cell in sheet[2]: cell.font = Font(bold=True, color="FFFFFF"); cell.fill = PatternFill("solid", fgColor="2563EB")
-    sheet.freeze_panes = "A3"; sheet.auto_filter.ref = f"A2:O{max(2, sheet.max_row)}"
-    for column in "FGKLMNO":
-        for cell in sheet[column][2:]: cell.number_format = '#,##0.00'
-    for column_number, column_cells in enumerate(sheet.columns, 1):
-        sheet.column_dimensions[get_column_letter(column_number)].width = min(24, max(12, max(len(str(cell.value or "")) for cell in column_cells) + 2))
+    book = Workbook()
+    headers = ["Employee Name", "Employee Code", "Account Number", "Bank Name", "Total Salary"]
+    groups = (
+        ("Bank Alfalah", [row for row in rows if row["bank_name"].strip().casefold() == "bank alfalah"]),
+        ("Other Banks", [row for row in rows if row["bank_name"].strip().casefold() != "bank alfalah"]),
+    )
+    for index, (title, group_rows) in enumerate(groups):
+        sheet = book.active if index == 0 else book.create_sheet()
+        sheet.title = title
+        sheet.append([f"Payroll for {start.strftime('%B %Y')}"])
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+        sheet.append(headers)
+        for row in group_rows:
+            sheet.append([row["full_name"], row["employee_code"], row["account_number"], row["bank_name"], row["net_salary"]])
+        sheet["A1"].font = Font(size=14, bold=True, color="FFFFFF")
+        for cell in sheet[1]: cell.fill = PatternFill("solid", fgColor="1E3A5F")
+        for cell in sheet[2]: cell.font = Font(bold=True, color="FFFFFF"); cell.fill = PatternFill("solid", fgColor="2563EB")
+        sheet.freeze_panes = "A3"; sheet.auto_filter.ref = f"A2:E{max(2, sheet.max_row)}"
+        for cell in sheet["E"][2:]: cell.number_format = '#,##0.00'
+        for column_number, column_cells in enumerate(sheet.columns, 1):
+            sheet.column_dimensions[get_column_letter(column_number)].width = min(24, max(12, max(len(str(cell.value or "")) for cell in column_cells) + 2))
     output = io.BytesIO(); book.save(output); output.seek(0)
     return send_file(output, as_attachment=True, download_name=f"payroll-{start.strftime('%Y-%m')}.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

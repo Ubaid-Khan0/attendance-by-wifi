@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Payroll{% endblock %}
 {% block content %}
-<header class="topbar"><div><h1>Payroll</h1><p class="subtitle">Monthly salary, attendance deductions, and bank payment details.</p></div><a class="primary-button" href="{{ url_for('export_payroll', month=month) }}">Download Excel</a></header>
+<header class="topbar"><div><h1>Payroll</h1><p class="subtitle">Monthly salary, attendance deductions, and bank payment details.</p></div><div class="inline-form">{% if session.role == 'hr' %}<a class="secondary-button" href="{{ url_for('payroll_adjustments', month=month) }}">Salary Adjustments</a>{% endif %}<a class="primary-button" href="{{ url_for('export_payroll', month=month) }}">Download Excel</a></div></header>
 <section class="content-card">
     <div class="section-header"><h2>Deduction Settings</h2><form method="get" class="inline-form"><input type="month" name="month" value="{{ month }}" required><button class="secondary-button">View Month</button></form></div>
     <form method="post" class="employee-form">
@@ -12,8 +12,8 @@
         <button class="primary-button">Save Deductions</button>
     </form>
 </section>
-<section class="content-card"><div class="section-header"><h2>{{ month }} Payroll</h2></div><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Bank Details</th><th>Salary</th><th>Previous Salary</th><th>Late</th><th>Absent</th><th>Leave</th><th>Deductions</th><th>Net Salary</th></tr></thead><tbody>
-{% for r in rows %}<tr><td>{{ r.full_name }}<small>{{ r.employee_code }} · {{ r.department or 'No department' }}</small></td><td>{{ r.bank_name }}<small>{{ r.account_number }}</small></td><td>{{ '%.2f'|format(r.salary) }}</td><td>{{ '%.2f'|format(r.previous_salary) if r.previous_salary is not none else '—' }}</td><td>{{ r.late_seconds }} sec<small>{{ '%.2f'|format(r.late_deduction) }}</small></td><td>{{ r.absent_days }} day(s)<small>{{ '%.2f'|format(r.absent_deduction) }}</small></td><td>{{ r.leave_days }} day(s)<small>{{ '%.2f'|format(r.leave_deduction) }}</small></td><td>{{ '%.2f'|format(r.total_deduction) }}</td><td><strong>{{ '%.2f'|format(r.net_salary) }}</strong></td></tr>
-{% else %}<tr><td colspan="9">No employees with salary details were found for this month.</td></tr>{% endfor %}
+<section class="content-card"><div class="section-header"><h2>{{ month }} Payroll</h2></div><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Bank Details</th><th>Salary</th><th>Previous Salary</th><th>Late</th><th>Absent</th><th>Leave</th><th>Commission</th><th>Deductions</th><th>Net Salary</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.full_name }}<small>{{ r.employee_code }} · {{ r.department or 'No department' }}</small></td><td>{{ r.bank_name }}<small>{{ r.account_number }}</small></td><td>{{ '%.2f'|format(r.salary) }}</td><td>{{ '%.2f'|format(r.previous_salary) if r.previous_salary is not none else '—' }}</td><td>{{ r.late_seconds }} sec<small>{{ '%.2f'|format(r.late_deduction) }}</small></td><td>{{ r.absent_days }} day(s)<small>{{ '%.2f'|format(r.absent_deduction) }}</small></td><td>{{ r.leave_days }} day(s)<small>{{ '%.2f'|format(r.leave_deduction) }}</small></td><td>{{ '%.2f'|format(r.commission) }}</td><td>{{ '%.2f'|format(r.total_deduction) }}<small>Manual: {{ '%.2f'|format(r.manual_deduction) }}</small></td><td><strong>{{ '%.2f'|format(r.net_salary) }}</strong></td></tr>
+{% else %}<tr><td colspan="10">No employees with salary details were found for this month.</td></tr>{% endfor %}
 </tbody></table></div></section>
 {% endblock %}
