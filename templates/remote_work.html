@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}Work from Home{% endblock %}
+{% block content %}
+<header class="topbar"><h1>Work from Home</h1></header>
+{% if technical %}<section class="content-card"><h2>Request remote attendance</h2><form method="post" class="employee-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="form-field"><label>From</label><input type="date" name="start_date" required></div><div class="form-field"><label>Through</label><input type="date" name="end_date" required></div><div class="form-field"><label>Reason</label><textarea name="reason" required></textarea></div><button class="primary-button">Submit request</button></form></section>{% endif %}
+<section class="content-card"><h2>My requests</h2><div class="table-wrapper"><table><thead><tr><th>Dates</th><th>Reason</th><th>Status</th></tr></thead><tbody>{% for r in requests %}<tr><td>{{ r.start_date }} to {{ r.end_date }}</td><td>{{ r.reason }}</td><td>{{ r.status|title }}</td></tr>{% else %}<tr><td colspan="3">No requests yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

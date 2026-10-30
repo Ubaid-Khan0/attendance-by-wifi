@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}Remote Work Approvals{% endblock %}
+{% block content %}
+<header class="topbar"><h1>Remote Work Approvals</h1></header><section class="content-card"><div class="table-wrapper"><table><thead><tr><th>Employee</th><th>Dates</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{% for r in requests %}<tr><td>{{ r.full_name }}<small>{{ r.team_name or 'No team' }}</small></td><td>{{ r.start_date }} to {{ r.end_date }}</td><td>{{ r.reason }}</td><td>{{ r.status|title }}</td><td>{% if r.status == 'pending' %}<form method="post" action="{{ url_for('review_remote', request_id=r.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button name="action" value="approved">Approve</button><button name="action" value="rejected">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No requests.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

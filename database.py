@@ -41,6 +41,8 @@ def create_tables():
             "deactivated_at TEXT", "cnic TEXT", "email TEXT",
             "monthly_salary REAL", "bank_name TEXT", "account_number TEXT",
             "is_paid INTEGER NOT NULL DEFAULT 1",
+            "employee_type TEXT NOT NULL DEFAULT 'csr'",
+            "team_id INTEGER",
         ):
             _add_column(connection, "employees", definition)
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_cnic ON employees(cnic) WHERE cnic IS NOT NULL")
@@ -142,6 +144,18 @@ def create_tables():
         _add_column(connection, "leave_requests", "attachment_name TEXT")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_employee_dates ON leave_requests(employee_id, start_date, end_date)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status)")
+        connection.execute("""CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+            manager_id INTEGER NOT NULL, lead_id INTEGER,
+            FOREIGN KEY(manager_id) REFERENCES employees(id),
+            FOREIGN KEY(lead_id) REFERENCES employees(id))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS remote_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT NOT NULL, reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', reviewed_by INTEGER,
+            reviewed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(employee_id) REFERENCES employees(id),
+            FOREIGN KEY(reviewed_by) REFERENCES employees(id))""")
         connection.commit()
     finally:
         connection.close()

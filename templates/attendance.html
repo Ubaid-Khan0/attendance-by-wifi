@@ -3,7 +3,8 @@
 {% block content %}
 <header class="topbar"><div><h1>My Attendance</h1><p class="subtitle">{{ session.employee_name }} · {{ session.employee_code }}</p></div></header>
 <section class="content-card">
-    <div class="section-header"><div><h2>Today</h2><p>{% if schedule %}Schedule: {{ schedule.start_time }}–{{ schedule.end_time }} · {{ schedule.grace_minutes }} minute grace{% else %}Schedule not configured{% endif %}</p></div><span class="status-badge {{ 'present' if today_record else '' }}">{{ 'Checked out' if today_record and today_record.check_out else 'Checked in' if today_record else 'Not checked in' }}</span></div>
+    {% if technical %}<p>Flexible schedule: 9 hours required. Your history shows worked time and any shortfall.</p>{% endif %}
+    <div class="section-header"><div><h2>Today</h2><p>{% if technical %}Flexible schedule · 9 hours required{% elif schedule %}Schedule: {{ schedule.start_time }}–{{ schedule.end_time }} · {{ schedule.grace_minutes }} minute grace{% else %}Schedule not configured{% endif %}</p></div><span class="status-badge {{ 'present' if today_record else '' }}">{{ 'Checked out' if today_record and today_record.check_out else 'Checked in' if today_record else 'Not checked in' }}</span></div>
     <div class="attendance-details"><div class="time-panel"><span>CHECK IN</span><strong>{{ today_record.check_in if today_record else 'Not recorded' }}</strong></div><div class="time-panel"><span>CHECK OUT</span><strong>{{ today_record.check_out if today_record and today_record.check_out else 'Not recorded' }}</strong></div></div>
     <div class="attendance-buttons">
     {% if not today_record %}
@@ -23,7 +24,7 @@
     </div>
 </section>
 <section class="content-card"><div class="section-header"><h2>History</h2><form method="get" class="inline-form"><input type="date" name="start" value="{{ start }}"><input type="date" name="end" value="{{ end }}"><button class="secondary-button">Filter</button></form></div><div class="table-wrapper"><table><thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Status</th><th>Late Details</th></tr></thead><tbody>
-{% for r in records %}<tr><td>{{ r.date }}</td><td>{{ r.check_in or '—' }}</td><td>{{ r.check_out or '—' }}</td><td>{{ r.labels|join(', ') }}</td><td>{{ r.late_reason or '—' }}{% if r.late_picture_name %}<small><a class="card-link" href="{{ url_for('late_check_in_picture', record_id=r.record_id) }}">View picture</a></small>{% endif %}</td></tr>
+{% for r in records %}<tr><td>{{ r.date }}</td><td>{{ r.check_in or '—' }}</td><td>{{ r.check_out or '—' }}</td><td>{{ r.labels|join(', ') }}{% if r.technical_time %}<small>Worked: {{ r.technical_time.worked_minutes }} min · Shortfall: {{ r.technical_time.shortfall_minutes }} min</small>{% endif %}</td><td>{{ r.late_reason or '—' }}{% if r.late_picture_name %}<small><a class="card-link" href="{{ url_for('late_check_in_picture', record_id=r.record_id) }}">View picture</a></small>{% endif %}</td></tr>
 {% else %}<tr><td colspan="5">No records in this period.</td></tr>{% endfor %}
 </tbody></table></div></section>
 <script>

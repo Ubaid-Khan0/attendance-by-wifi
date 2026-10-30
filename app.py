@@ -234,6 +234,19 @@ def labels_for(day, check_in, check_out, schedule, valid=True):
     return result
 
 
+def remote_approved(connection, employee_id, day):
+    return connection.execute("""SELECT 1 FROM remote_requests WHERE employee_id=?
+        AND status='approved' AND start_date<=? AND end_date>=? LIMIT 1""",
+        (employee_id, day, day)).fetchone() is not None
+
+
+def technical_time(check_in, check_out):
+    if not check_in or not check_out:
+        return None
+    worked = max(0, int((datetime.fromisoformat(check_out) - datetime.fromisoformat(check_in)).total_seconds() // 60))
+    return {"worked_minutes": worked, "shortfall_minutes": max(0, 540 - worked)}
+
+
 def client_on_allowed_network(connection):
     value = connection.execute("SELECT value FROM settings WHERE key='allowed_networks'").fetchone()["value"]
     try:
@@ -354,12 +367,16 @@ def my_attendance():
     try:
         today_record = connection.execute("SELECT * FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today_pk().isoformat())).fetchone()
         schedule = current_schedule(connection)
-        late_check_in = bool(schedule and now_pk() > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
-        allowed = client_on_allowed_network(connection)
+        employee = connection.execute("SELECT employee_type FROM employees WHERE id=?", (session["user_id"],)).fetchone()
+        technical = employee["employee_type"] == "technical"
+        late_check_in = bool(not technical and schedule and now_pk() > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
+        allowed = client_on_allowed_network(connection) or (technical and remote_approved(connection, session["user_id"], today_pk().isoformat()))
         rows = build_report(connection, start, end, str(session["user_id"]))
+        for row in rows:
+            row["technical_time"] = technical_time(row["check_in"], row["check_out"]) if technical else None
     finally:
         connection.close()
-    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, late_check_in=late_check_in, late_reasons=LATE_REASONS, network_allowed=allowed, start=start, end=end)
+    return render_template("attendance.html", records=rows, today_record=today_record, schedule=schedule, late_check_in=late_check_in, late_reasons=LATE_REASONS, network_allowed=allowed, technical=technical, start=start, end=end)
 
 
 @app.post("/attendance/check-in")
@@ -371,8 +388,10 @@ def check_in():
     try:
         connection.execute("BEGIN IMMEDIATE")
         schedule = current_schedule(connection, today)
+        employee = connection.execute("SELECT employee_type FROM employees WHERE id=?", (session["user_id"],)).fetchone()
+        technical = employee["employee_type"] == "technical"
         current_time = now_pk()
-        is_late = bool(schedule and current_time > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
+        is_late = bool(not technical and schedule and current_time > datetime.combine(today_pk(), time.fromisoformat(schedule["start_time"])) + timedelta(minutes=schedule["grace_minutes"]))
         late_reason = selected_reason(request.form, "late_reason", LATE_REASONS)
         picture = request.files.get("late_picture")
         picture_extension = leave_image_extension(picture)
@@ -380,7 +399,7 @@ def check_in():
             flash("The administrator must configure a work schedule first.", "error")
         elif is_holiday(connection, today) or today_pk().weekday() >= 5:
             flash("Today is not a scheduled working day.", "error")
-        elif not client_on_allowed_network(connection):
+        elif not client_on_allowed_network(connection) and not (technical and remote_approved(connection, session["user_id"], today)):
             flash("Check-in is only available on the configured office Wi-Fi.", "error")
         elif connection.execute("SELECT 1 FROM attendance WHERE employee_id=? AND attendance_date=? AND is_valid=1", (session["user_id"], today)).fetchone():
             flash("You already have a check-in for today.", "error")
@@ -423,6 +442,137 @@ def check_out():
     return redirect(url_for("my_attendance"))
 
 
+@app.route("/remote-work", methods=["GET", "POST"])
+@login_required
+def remote_work():
+    connection = get_connection()
+    try:
+        employee = connection.execute("SELECT employee_type FROM employees WHERE id=?", (session["user_id"],)).fetchone()
+        if request.method == "POST":
+            if not employee or employee["employee_type"] != "technical":
+                abort(403)
+            start, end = request.form.get("start_date", ""), request.form.get("end_date", "")
+            reason = request.form.get("reason", "").strip()
+            try:
+                valid = date.fromisoformat(start) <= date.fromisoformat(end)
+            except ValueError:
+                valid = False
+            if not valid or not reason:
+                flash("Enter a valid date range and reason.", "error")
+            else:
+                connection.execute("INSERT INTO remote_requests(employee_id,start_date,end_date,reason) VALUES(?,?,?,?)", (session["user_id"], start, end, reason))
+                connection.commit()
+                flash("Work-from-home request submitted.", "success")
+                return redirect(url_for("remote_work"))
+        requests = connection.execute("SELECT * FROM remote_requests WHERE employee_id=? ORDER BY id DESC", (session["user_id"],)).fetchall()
+    finally:
+        connection.close()
+    return render_template("remote_work.html", requests=requests, technical=employee["employee_type"] == "technical", today=today_pk().isoformat())
+
+
+@app.get("/remote-work/review")
+@login_required
+def remote_review():
+    if session.get("role") not in {"hr", "manager"}:
+        abort(403)
+    connection = get_connection()
+    try:
+        rows = connection.execute("""SELECT r.*, e.full_name, t.name AS team_name FROM remote_requests r
+            JOIN employees e ON e.id=r.employee_id LEFT JOIN teams t ON t.id=e.team_id
+            WHERE ?='hr' OR t.manager_id=? ORDER BY r.id DESC""", (session["role"], session["user_id"])).fetchall()
+    finally:
+        connection.close()
+    return render_template("remote_review.html", requests=rows)
+
+
+@app.post("/remote-work/<int:request_id>/review")
+@login_required
+def review_remote(request_id):
+    if session.get("role") not in {"hr", "manager"}:
+        abort(403)
+    action = request.form.get("action")
+    if action not in {"approved", "rejected"}:
+        abort(400)
+    connection = get_connection()
+    try:
+        item = connection.execute("""SELECT r.status,t.manager_id FROM remote_requests r
+            JOIN employees e ON e.id=r.employee_id LEFT JOIN teams t ON t.id=e.team_id WHERE r.id=?""", (request_id,)).fetchone()
+        if not item:
+            abort(404)
+        if session["role"] == "manager" and item["manager_id"] != session["user_id"]:
+            abort(403)
+        if item["status"] == "pending":
+            connection.execute("UPDATE remote_requests SET status=?, reviewed_by=?, reviewed_at=? WHERE id=?", (action, session["user_id"], now_pk().isoformat(sep=" ", timespec="seconds"), request_id))
+            connection.commit()
+    finally:
+        connection.close()
+    return redirect(url_for("remote_review"))
+
+
+@app.route("/teams", methods=["GET", "POST"])
+@login_required
+def teams():
+    connection = get_connection()
+    try:
+        role = session.get("role")
+        if request.method == "POST":
+            if role != "manager":
+                abort(403)
+            name = request.form.get("name", "").strip()
+            if not name:
+                flash("Enter a team name.", "error")
+            else:
+                try:
+                    connection.execute("INSERT INTO teams(name,manager_id) VALUES(?,?)", (name, session["user_id"]))
+                    connection.commit()
+                except sqlite3.IntegrityError:
+                    flash("That team name already exists.", "error")
+            return redirect(url_for("teams"))
+        team_rows = connection.execute("""SELECT t.*,m.full_name AS manager_name,l.full_name AS lead_name FROM teams t
+            JOIN employees m ON m.id=t.manager_id LEFT JOIN employees l ON l.id=t.lead_id
+            WHERE t.manager_id=? OR t.lead_id=? OR t.id=(SELECT team_id FROM employees WHERE id=?)
+            ORDER BY t.name""", (session["user_id"],)*3).fetchall()
+        members = connection.execute("SELECT id,full_name,role,team_id FROM employees WHERE is_active=1 AND role!='admin' ORDER BY full_name").fetchall()
+    finally:
+        connection.close()
+    return render_template("teams.html", teams=team_rows, members=members, role=role)
+
+
+@app.post("/teams/<int:team_id>/members")
+@login_required
+def team_members(team_id):
+    connection = get_connection()
+    try:
+        team = connection.execute("SELECT * FROM teams WHERE id=?", (team_id,)).fetchone()
+        if not team:
+            abort(404)
+        if session["user_id"] not in {team["manager_id"], team["lead_id"]}:
+            abort(403)
+        try:
+            member_id = int(request.form.get("employee_id", ""))
+        except ValueError:
+            abort(400)
+        member = connection.execute("SELECT role,is_active FROM employees WHERE id=?", (member_id,)).fetchone()
+        if not member or not member["is_active"] or member["role"] == "admin":
+            abort(400)
+        action = request.form.get("action")
+        if action == "add":
+            connection.execute("UPDATE employees SET team_id=? WHERE id=?", (team_id, member_id))
+        elif action == "remove":
+            connection.execute("UPDATE employees SET team_id=NULL WHERE id=? AND team_id=?", (member_id, team_id))
+            if team["lead_id"] == member_id:
+                connection.execute("UPDATE teams SET lead_id=NULL WHERE id=?", (team_id,))
+        elif action == "lead" and session["user_id"] == team["manager_id"] and member["role"] == "team_lead":
+            connection.execute("UPDATE employees SET team_id=? WHERE id=?", (team_id, member_id))
+            connection.execute("UPDATE teams SET lead_id=? WHERE id=?", (member_id, team_id))
+        else:
+            abort(400)
+        connection.commit()
+    finally:
+        connection.close()
+    return redirect(url_for("teams"))
+
+
 def build_report(connection, start, end, employee_id="", department="", label=""):
     employees = connection.execute("SELECT * FROM employees WHERE (?='' OR id=?) AND (?='' OR department=?) ORDER BY full_name", (employee_id, employee_id, department, department)).fetchall()
     records = connection.execute("SELECT * FROM attendance WHERE attendance_date BETWEEN ? AND ?", (start, end)).fetchall()
@@ -444,6 +594,9 @@ def build_report(connection, start, end, employee_id="", department="", label=""
                 record = by_key.get((employee["id"], day_text))
                 on_leave = any(item["employee_id"] == employee["id"] and item["start_date"] <= day_text <= item["end_date"] for item in approved_leave)
                 labels = ["On Leave"] if on_leave and not record else labels_for(day_text, record["check_in"] if record else None, record["check_out"] if record else None, schedule, record["is_valid"] if record else True)
+                if employee["employee_type"] == "technical" and record and record["is_valid"]:
+                    duration = technical_time(record["check_in"], record["check_out"])
+                    labels = ["Short by %d min" % duration["shortfall_minutes"]] if duration and duration["shortfall_minutes"] else ["Present"]
                 row = {"record_id": record["id"] if record else None, "employee_code": employee["employee_code"], "full_name": employee["full_name"], "department": employee["department"] or "", "date": day_text, "check_in": record["check_in"] if record else None, "check_out": record["check_out"] if record else None, "late_reason": record["late_reason"] if record else None, "late_picture_name": record["late_picture_name"] if record else None, "labels": labels}
                 if not label or label in labels:
                     rows.append(row)
@@ -670,8 +823,11 @@ def add_employee():
         connection.close()
     if bootstrap_hr:
         role = "hr"
-    if role not in {"employee", "intern", "manager", "hr"}:
+    if role not in {"employee", "intern", "manager", "team_lead", "hr"}:
         flash("Select a valid employee role.", "error"); return redirect(url_for("employees"))
+    employee_type = request.form.get("employee_type", "csr")
+    if employee_type not in {"csr", "technical"}:
+        flash("Select a valid employee type.", "error"); return redirect(url_for("employees"))
     is_paid = role != "intern" or request.form.get("payment_status") != "unpaid"
     bank_name = request.form.get("bank_name", "").strip() if is_paid else None
     account_number = request.form.get("account_number", "").strip() if is_paid else None
@@ -687,7 +843,7 @@ def add_employee():
         flash("Enter a valid monthly salary, bank name, and account number.", "error"); return redirect(url_for("employees"))
     connection = get_connection()
     try:
-        cursor = connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,monthly_salary,bank_name,account_number,password_hash,must_change_password,role,is_paid) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)", (code, name, department or None, cnic, email, monthly_salary, bank_name, account_number, generate_password_hash(password), role, int(is_paid)))
+        cursor = connection.execute("INSERT INTO employees(employee_code,full_name,department,cnic,email,monthly_salary,bank_name,account_number,password_hash,must_change_password,role,is_paid,employee_type) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?)", (code, name, department or None, cnic, email, monthly_salary, bank_name, account_number, generate_password_hash(password), role, int(is_paid), employee_type))
         if is_paid:
             connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (cursor.lastrowid, monthly_salary, session["user_id"]))
         connection.commit(); flash("Employee added.", "success")
@@ -716,6 +872,7 @@ def edit_employee(employee_id):
             department = request.form.get("department", "").strip()
             cnic, email = employee_contact_details(request.form)
             role = request.form.get("role", "").strip()
+            employee_type = request.form.get("employee_type", "csr")
             is_paid = role != "intern" or request.form.get("payment_status") != "unpaid"
             bank_name = request.form.get("bank_name", "").strip() if is_paid else None
             account_number = request.form.get("account_number", "").strip() if is_paid else None
@@ -730,7 +887,7 @@ def edit_employee(employee_id):
                 flash("Enter a valid 13-digit CNIC and email address.", "error")
             elif is_paid and (not math.isfinite(monthly_salary) or monthly_salary <= 0 or not bank_name or not account_number):
                 flash("Enter a valid monthly salary, bank name, and account number.", "error")
-            elif role not in {"employee", "intern", "manager", "hr"}:
+            elif role not in {"employee", "intern", "manager", "team_lead", "hr"} or employee_type not in {"csr", "technical"}:
                 flash("Select a valid employee role.", "error")
             elif session.get("role") == "hr" and employee_id == session["user_id"] and (role != "hr" or not active):
                 flash("You cannot remove your own HR access or deactivate your account.", "error")
@@ -738,9 +895,9 @@ def edit_employee(employee_id):
                 deactivated = None if active else now_pk().isoformat(sep=" ", timespec="seconds")
                 try:
                     connection.execute("""
-                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, monthly_salary=?, bank_name=?, account_number=?, role=?, is_paid=?, is_active=?, deactivated_at=?
+                        UPDATE employees SET full_name=?, department=?, cnic=?, email=?, monthly_salary=?, bank_name=?, account_number=?, role=?, is_paid=?, is_active=?, deactivated_at=?, employee_type=?
                         WHERE id=?
-                    """, (name, department or None, cnic, email, monthly_salary, bank_name, account_number, role, int(is_paid), active, deactivated, employee_id))
+                    """, (name, department or None, cnic, email, monthly_salary, bank_name, account_number, role, int(is_paid), active, deactivated, employee_type, employee_id))
                     if is_paid and (employee["monthly_salary"] is None or float(employee["monthly_salary"]) != monthly_salary):
                         connection.execute("INSERT INTO salary_history(employee_id,monthly_salary,changed_by) VALUES(?,?,?)", (employee_id, monthly_salary, session["user_id"]))
                     connection.commit()

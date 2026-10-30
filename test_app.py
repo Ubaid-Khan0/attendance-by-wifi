@@ -15,7 +15,7 @@ os.environ["TRUSTED_IP_HEADER"] = "X-Real-IP"
 
 from werkzeug.security import generate_password_hash
 
-from app import app, labels_for, now_pk, today_pk
+from app import app, labels_for, now_pk, today_pk, technical_time
 from database import get_connection
 
 
@@ -28,7 +28,9 @@ class AttendanceAppTests(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
         connection = get_connection()
-        for table in ("attendance_audit", "leave_requests", "attendance", "salary_history", "holidays", "work_schedules", "employees"):
+        for table in ("remote_requests", "teams", "attendance_audit", "leave_requests", "attendance", "salary_history", "holidays", "work_schedules", "employees"):
+            if table == "employees":
+                connection.execute("UPDATE settings SET updated_by=NULL")
             connection.execute(f"DELETE FROM {table}")
         connection.execute("""
             INSERT INTO employees(id, employee_code, full_name, password_hash, role)
@@ -144,6 +146,26 @@ class AttendanceAppTests(unittest.TestCase):
     def test_employee_starts_scheduled_day_as_absent(self):
         schedule = {"start_time": "00:00", "end_time": "23:59", "grace_minutes": 0}
         self.assertEqual(labels_for("2026-10-23", None, None, schedule), ["Absent"])
+
+    def test_technical_worked_time_and_shortfall(self):
+        self.assertEqual(technical_time("2026-10-23 09:00:00", "2026-10-23 17:30:00"), {"worked_minutes": 510, "shortfall_minutes": 30})
+        self.assertEqual(technical_time("2026-10-23 09:00:00", "2026-10-23 18:00:00"), {"worked_minutes": 540, "shortfall_minutes": 0})
+
+    def test_remote_approval_allows_technical_check_in_off_network(self):
+        connection = get_connection()
+        connection.execute("UPDATE employees SET employee_type='technical' WHERE id=2")
+        connection.execute("UPDATE settings SET value='198.51.100.10/32' WHERE key='allowed_networks'")
+        request_id = connection.execute("INSERT INTO remote_requests(employee_id,start_date,end_date,reason) VALUES(?,?,?,?)", (2, today_pk().isoformat(), today_pk().isoformat(), "Project work")).lastrowid
+        connection.commit()
+        connection.close()
+        self.login_hr()
+        response = self.client.post(f"/remote-work/{request_id}/review", data={"csrf_token": self.csrf(), "action": "approved"})
+        self.assertEqual(response.status_code, 302)
+        self.client.post("/logout", data={"csrf_token": self.csrf()})
+        self.login()
+        response = self.client.post("/attendance/check-in", data={"csrf_token": self.csrf()}, follow_redirects=True)
+        if today_pk().weekday() < 5:
+            self.assertIn(b"Check-in recorded", response.data)
 
     def test_check_in_is_unique_and_check_out_works(self):
         self.login()
